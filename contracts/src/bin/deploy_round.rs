@@ -365,8 +365,13 @@ async fn fund_game(
             Instant::now() < deadline,
             "no fee-asset note reached the game account within {wait}s; rerun, or send USDCx to it and rerun with FOMO3D_FUND_WAIT_SECONDS"
         );
-        tokio::time::sleep(Duration::from_secs(interval)).await;
+        tokio::time::sleep(retry_pause(deadline, Instant::now(), Duration::from_secs(interval))).await;
     }
+}
+
+/// The wait before the next funding poll: the retry interval, but never past the deadline.
+fn retry_pause(deadline: Instant, now: Instant, interval: Duration) -> Duration {
+    interval.min(deadline.saturating_duration_since(now))
 }
 
 async fn wait_for_commit(
@@ -692,6 +697,15 @@ mod tests {
         let error = solve_pow_within(&[9], 1, Duration::from_millis(100)).unwrap_err();
         assert!(error.to_string().contains("not solved within"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_funding_pause_never_outlasts_the_deadline() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(1);
+        assert_eq!(retry_pause(deadline, now, Duration::from_secs(30)), Duration::from_secs(1));
+        assert_eq!(retry_pause(deadline, now, Duration::from_millis(200)), Duration::from_millis(200));
+        assert_eq!(retry_pause(deadline, deadline + Duration::from_secs(5), Duration::from_secs(30)), Duration::ZERO);
     }
 
     #[test]
