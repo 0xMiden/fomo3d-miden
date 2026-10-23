@@ -38,17 +38,24 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
   const [balance, setBalance] = useState<bigint | null>(null);
 
   const accountHex = bread.accountHex;
-  useEffect(() => {
-    setBuys(gameHex && accountHex ? loadBuys(gameHex, accountHex) : []);
-  }, [gameHex, accountHex]);
-
   // The history on screen belongs to the active account; a buy in flight belongs to the account
-  // that sent it, which can differ after a switch in Bread.
+  // that sent it, which can differ after a switch in Bread. `held` mirrors the active list so a
+  // change is persisted when it is made, not when React gets round to an updater (or never does,
+  // after an unmount).
+  const held = useRef<BuyRecord[]>([]);
   const active = useRef({ gameHex, accountHex });
   active.current = { gameHex, accountHex };
-  const changeBuys = useCallback((game: string, account: string, change: (held: BuyRecord[]) => BuyRecord[]) => {
-    if (active.current.gameHex === game && active.current.accountHex === account) setBuys(change);
-    else change(loadBuys(game, account));
+  useEffect(() => {
+    held.current = gameHex && accountHex ? loadBuys(gameHex, accountHex) : [];
+    setBuys(held.current);
+  }, [gameHex, accountHex]);
+  const changeBuys = useCallback((game: string, account: string, change: (current: BuyRecord[]) => BuyRecord[]) => {
+    if (active.current.gameHex === game && active.current.accountHex === account) {
+      held.current = change(held.current);
+      setBuys(held.current);
+    } else {
+      change(loadBuys(game, account));
+    }
   }, []);
 
   const push = useCallback((text: string, kind: LogKind = "info", href?: string) => {

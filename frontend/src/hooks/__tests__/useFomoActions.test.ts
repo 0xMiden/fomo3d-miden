@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const sdk = vi.hoisted(() => ({ buildNetworkNote: vi.fn() }));
+const sdk = vi.hoisted(() => ({ buildNetworkNote: vi.fn(), roundPhase: vi.fn(() => "open"), faucet: vi.fn() }));
 
 vi.mock("@/lib/fomo/bread", () => ({
   customTransaction: () => ({}),
@@ -12,10 +12,10 @@ vi.mock("@/lib/fomo/bread", () => ({
 vi.mock("@/lib/fomo/notes", () => ({ buildNetworkNote: sdk.buildNetworkNote }));
 vi.mock("@/lib/fomo/scripts", () => ({ loadScript: async () => ({}) }));
 vi.mock("@/lib/fomo/requests", () => ({ ownOutputRequest: () => ({}) }));
-vi.mock("@/lib/fomo/faucet", () => ({ requestFaucetTokens: vi.fn() }));
+vi.mock("@/lib/fomo/faucet", () => ({ requestFaucetTokens: sdk.faucet }));
 vi.mock("@/lib/fomo/game", () => ({
   holdsLeader: (state: { leader: string | null }, account: string) => state.leader === account,
-  roundPhase: () => "open",
+  roundPhase: sdk.roundPhase,
 }));
 
 import { loadBuys } from "@/lib/fomo/buys";
@@ -58,6 +58,9 @@ const setup = (b = bread(), refresh = vi.fn(async () => null as ReturnType<typeo
 
 beforeEach(() => {
   localStorage.clear();
+  sdk.roundPhase.mockReset();
+  sdk.roundPhase.mockReturnValue("open");
+  sdk.faucet.mockReset();
   sdk.buildNetworkNote.mockReset();
   sdk.buildNetworkNote.mockReturnValue({ id: () => ({ toString: () => "0xnote" }) });
 });
@@ -163,5 +166,56 @@ describe("useFomoActions buy", () => {
       await done;
     });
     expect(loadBuys(GAME, ME)).toEqual([]);
+  });
+
+  it("persists an in-flight buy even when the component unmounts before the wallet answers", async () => {
+    let approve!: (id: string) => void;
+    const request = vi.fn(() => new Promise<string>((resolve) => (approve = resolve)));
+    const refresh = vi.fn(async () => snapshot(state({ round: 5, keys: 0n })));
+    const { result, unmount } = setup(bread({ requestTransaction: request }), refresh);
+    let done!: Promise<unknown>;
+    await act(async () => {
+      done = result.current.buy(1_000_000n);
+    });
+    unmount();
+    approve("w1");
+    await done;
+    expect(loadBuys(GAME, ME)[0]).toMatchObject({ noteId: "0xnote", walletTxId: "w1", txHash: "0xtx", outcome: "ended" });
+  });
+
+  it("refuses to buy once the clock ran out", async () => {
+    sdk.roundPhase.mockReturnValue("expired");
+    const { result } = setup();
+    await act(async () => void (await result.current.buy(1_000_000n)));
+    expect(sdk.buildNetworkNote).not.toHaveBeenCalled();
+    expect(result.current.log[0].text).toMatch(/Time is up/);
+  });
+});
+
+describe("useFomoActions settle and faucet", () => {
+  it("refuses to settle while the clock is still running", async () => {
+    const { result } = setup();
+    await act(async () => void (await result.current.settle()));
+    expect(sdk.buildNetworkNote).not.toHaveBeenCalled();
+    expect(result.current.log[0]).toMatchObject({ kind: "error", text: "The clock has not run out yet." });
+  });
+
+  it("settles an expired round and waits for the round to advance", async () => {
+    sdk.roundPhase.mockReturnValue("expired");
+    const b = bread();
+    const refresh = vi.fn(async () => snapshot(state({ round: 5, keys: 0n })));
+    const { result } = setup(b, refresh);
+    await act(async () => void (await result.current.settle()));
+    expect(sdk.buildNetworkNote).toHaveBeenCalledTimes(1);
+    expect(result.current.log.map((entry) => entry.text).join("\n")).toMatch(/Round 4 settled/);
+    expect(result.current.busy).toBeNull();
+  });
+
+  it("logs the faucet note it requested for the connected account", async () => {
+    sdk.faucet.mockResolvedValue({ noteId: "0xfaucetnote", amount: 100_000_000n, faucetWalletId: "f" });
+    const { result } = setup();
+    await act(async () => void (await result.current.faucet()));
+    expect(sdk.faucet).toHaveBeenCalledWith(ME, expect.anything());
+    expect(result.current.log[0]).toMatchObject({ kind: "ok", href: "/n/0xfaucetnote" });
   });
 });
