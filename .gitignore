@@ -1,0 +1,10 @@
+/contracts/target/
+/frontend/node_modules/
+/frontend/dist/
+*.local
+*.log
+.DS_Store
+.vscode/
+.idea/
+store.sqlite3
+keystore/

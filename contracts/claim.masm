@@ -1,0 +1,38 @@
+use miden::core::crypto::hashes::poseidon2
+use miden::protocol::active_note
+use miden::standards::wallets::basic as basic_wallet
+
+# CONSTANTS
+# =================================================================================================
+
+const NUM_STORAGE_ITEMS = 4
+const STORAGE_PTR = 0
+const ERR_STORAGE = "claim note needs one commitment word"
+const ERR_SECRET = "claim secret does not match the leader commitment"
+
+# NOTE SCRIPT
+# =================================================================================================
+
+#! Redeems a prize using the secret behind the stored commitment.
+#!
+#! Storage contains C = Poseidon2(secret, EMPTY_WORD).
+#! Advice map entry C contains the four secret felts.
+#! The note is a bearer claim. The claimant may use a fresh account.
+#!
+#! Inputs: [pad(16)]
+#! Outputs: [pad(16)]
+@note_script
+pub proc main()
+    push.NUM_STORAGE_ITEMS push.STORAGE_PTR
+    exec.active_note::get_bounded_storage
+    eq.NUM_STORAGE_ITEMS assert.err=ERR_STORAGE
+
+    padw mem_loadw_le.STORAGE_PTR
+    adv.push_mapval
+    padw adv_loadw
+    padw swapw
+    exec.poseidon2::merge
+    assert_eqw.err=ERR_SECRET
+
+    exec.basic_wallet::move_note_assets_to_account
+end

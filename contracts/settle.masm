@@ -1,0 +1,31 @@
+use miden::protocol::active_note
+use miden::standards::note::note_target
+use fomo3d::game as game
+
+# ERRORS
+# =================================================================================================
+
+const ERR_NOT_PUBLIC = "settle note must be public"
+const ERR_HAS_ASSETS = "settle note must not carry assets"
+
+# NOTE SCRIPT
+# =================================================================================================
+
+#! Settles a round after its deadline.
+#!
+#! Inputs: [pad(16)]
+#! Outputs: [pad(16)]
+#!
+#! Panics if the note is private, targets another account, or carries assets.
+@note_script
+pub proc main()
+    exec.active_note::is_public
+    assert.err=ERR_NOT_PUBLIC
+
+    exec.note_target::assert_active_account_is_network_target_account
+
+    exec.active_note::get_initial_num_assets
+    eq.0 assert.err=ERR_HAS_ASSETS
+
+    call.game::settle
+end
