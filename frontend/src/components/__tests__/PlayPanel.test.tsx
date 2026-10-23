@@ -145,22 +145,30 @@ describe("PlayPanel", () => {
     expect(screen.getAllByRole("button", { name: "SETTLE ROUND" })).toHaveLength(1);
   });
 
-  it("labels my buys against the live round", () => {
+  it("labels a buy whose flow never finished PENDING, or ENDED once its round is over, and never guesses from the live leader", () => {
     const a = actions({
       buys: [
         buy({ at: 5, noteId: "0xpending", txHash: undefined }),
         buy({ at: 4, noteId: "0xwaiting", priceAtBuy: "1200000" }),
-        buy({ at: 3, noteId: "0xlead" }),
+        buy({ at: 3, noteId: "0xmoved", priceAtBuy: "1000000" }),
         buy({ at: 2, noteId: "0xold", round: 3 }),
       ],
     });
-    const { rerender } = render(<PlayPanel state={{ ...state, leader: ME_LEADER }} now={1} bread={bread()} actions={a} />);
     const labels = () => screen.getAllByText(/^(PENDING|LEADING|OUTBID|ENDED|UNCONFIRMED)$/).map((el) => el.textContent);
-    expect(labels()).toEqual(["PENDING", "PENDING", "LEADING", "ENDED"]);
+    const { rerender } = render(<PlayPanel state={{ ...state, leader: ME_LEADER }} now={1} bread={bread()} actions={a} />);
+    expect(labels()).toEqual(["PENDING", "PENDING", "PENDING", "ENDED"]);
     expect(screen.getAllByRole("link", { name: "TX ↗" })).toHaveLength(3);
     rerender(<PlayPanel state={state} now={1} bread={bread()} actions={a} />);
-    expect(labels()).toEqual(["PENDING", "PENDING", "OUTBID", "ENDED"]);
+    expect(labels()).toEqual(["PENDING", "PENDING", "PENDING", "ENDED"]);
     expect(screen.queryByRole("button", { name: /CLAIM|REFUND/ })).toBeNull();
+  });
+
+  it("re-reads the balance when the connected Bread account changes", () => {
+    const a = actions();
+    const { rerender } = render(<PlayPanel state={state} now={1} bread={bread()} actions={a} />);
+    expect(a.refreshBalance).toHaveBeenCalledTimes(1);
+    rerender(<PlayPanel state={state} now={1} bread={bread({ accountHex: `0x${"cd".repeat(15)}` })} actions={a} />);
+    expect(a.refreshBalance).toHaveBeenCalledTimes(2);
   });
 
   it("labels a buy by the outcome its flow observed, not by the live price or leader", () => {

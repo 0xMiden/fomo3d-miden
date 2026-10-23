@@ -17,16 +17,15 @@ export interface PlayPanelProps {
 type BuyStatus = { label: "PENDING" | "LEADING" | "OUTBID" | "ENDED" | "UNCONFIRMED"; tone: "lead" | "idle" | "lost" };
 
 /**
- * A buy's label comes from the outcome its flow observed. Only a record without one (the page was
- * reloaded mid-flow) falls back to the live round: the price rises by one step per accepted key, so
- * a price still equal to the one shown at buy time means no key was accepted since.
+ * A buy's label comes from the outcome its flow observed. A record without one (the page was
+ * reloaded mid-flow) is PENDING: the live price and leader say nothing about this note, because
+ * any other player's key moves them too.
  */
 function buyStatus(record: BuyRecord, state: GameState | null, accountHex: string | null): BuyStatus {
   if (record.outcome === "unconfirmed") return { label: "UNCONFIRMED", tone: "idle" };
   if (record.outcome === "ended") return { label: "ENDED", tone: "idle" };
-  if (!record.txHash || !state) return { label: "PENDING", tone: "idle" };
-  if (record.round < state.round) return { label: "ENDED", tone: "idle" };
-  if (record.outcome !== "led" && BigInt(record.priceAtBuy) === state.price) return { label: "PENDING", tone: "idle" };
+  if (state && record.round < state.round) return { label: "ENDED", tone: "idle" };
+  if (record.outcome !== "led" || !state) return { label: "PENDING", tone: "idle" };
   if (holdsLeader(state, accountHex)) return { label: "LEADING", tone: "lead" };
   return { label: "OUTBID", tone: "lost" };
 }
@@ -47,9 +46,9 @@ export function PlayPanel({ state, now, bread, actions }: PlayPanelProps) {
 
   useEffect(() => {
     if (connected) void actions.refreshBalance();
-    // Only re-read when the connection changes or the chain moved (a key, a refund or a payout).
+    // Only re-read when the connection or the account changes, or the chain moved (a key, a refund or a payout).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, state?.keys, state?.round]);
+  }, [connected, bread.accountHex, state?.keys, state?.round]);
 
   return (
     <div className="play-stack">

@@ -48,6 +48,7 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
   useEffect(() => {
     held.current = gameHex && accountHex ? loadBuys(gameHex, accountHex) : [];
     setBuys(held.current);
+    setBalance(null);
   }, [gameHex, accountHex]);
   const changeBuys = useCallback((game: string, account: string, change: (current: BuyRecord[]) => BuyRecord[]) => {
     if (active.current.gameHex === game && active.current.accountHex === account) {
