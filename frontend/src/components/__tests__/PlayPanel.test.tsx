@@ -108,6 +108,19 @@ describe("PlayPanel", () => {
     expect(screen.getByRole("textbox")).toHaveAttribute("aria-invalid", "true");
   });
 
+  it("rejects a max spend that does not fit in a u32 and accepts the largest that does", () => {
+    render(<PlayPanel state={state} now={1} bread={bread()} actions={actions()} />);
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "4295" } });
+    expect(screen.getByRole("button", { name: "BUY KEY" })).toBeDisabled();
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    fireEvent.change(input, { target: { value: "4294.967296" } });
+    expect(screen.getByRole("button", { name: "BUY KEY" })).toBeDisabled();
+    fireEvent.change(input, { target: { value: "4294.967295" } });
+    expect(screen.getByRole("button", { name: "BUY KEY" })).toBeEnabled();
+    expect(input).toHaveAttribute("aria-invalid", "false");
+  });
+
   it("offers settle once the clock ran out and keys exist", () => {
     const a = actions();
     render(<PlayPanel state={state} now={1_800_000_001} bread={bread()} actions={a} />);

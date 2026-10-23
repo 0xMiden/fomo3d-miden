@@ -5,7 +5,7 @@ import type { FomoActions } from "@/hooks/useFomoActions";
 import { explorer, shortHex } from "@/lib/fomo/bread";
 import type { BuyRecord } from "@/lib/fomo/buys";
 import { holdsLeader, roundPhase } from "@/lib/fomo/game";
-import { formatUsdc, parseUsdc, type GameState } from "@/lib/fomo/types";
+import { formatUsdc, noteAmountFits, parseUsdc, type GameState } from "@/lib/fomo/types";
 
 export interface PlayPanelProps {
   state: GameState | null;
@@ -36,7 +36,7 @@ export function PlayPanel({ state, now, bread, actions }: PlayPanelProps) {
     if (!touched && state) setSpendText(formatUsdc(state.price, 6).replace(/0+$/, "").replace(/\.$/, ""));
   }, [state, touched]);
   const spend = parseUsdc(spendText);
-  const spendValid = spend !== null && !!state && spend >= state.price;
+  const spendValid = spend !== null && !!state && spend >= state.price && noteAmountFits(spend);
   const connected = bread.connected;
   const busy = actions.busy;
   const canBuy = connected && !busy && !!state && phase === "open" && spendValid;

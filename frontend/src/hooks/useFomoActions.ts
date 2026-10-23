@@ -7,7 +7,7 @@ import { holdsLeader, roundPhase } from "@/lib/fomo/game";
 import { buildNetworkNote } from "@/lib/fomo/notes";
 import { ownOutputRequest } from "@/lib/fomo/requests";
 import { loadScript } from "@/lib/fomo/scripts";
-import { formatUsdc, type GameState } from "@/lib/fomo/types";
+import { formatUsdc, noteAmountFits, type GameState } from "@/lib/fomo/types";
 import type { Bread } from "./useBread";
 import type { GameSnapshot } from "./useGameState";
 
@@ -143,6 +143,7 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
         const ctx = requireContext();
         if (roundPhase(ctx.state, nowSeconds()) === "expired") throw new Error("Time is up. Settle the round before buying.");
         if (maxSpend < ctx.state.price) throw new Error("Maximum spend is below the current key price.");
+        if (!noteAmountFits(maxSpend)) throw new Error("Maximum spend does not fit in a u32.");
         // The buy note carries no storage: the game reads the sender from the note metadata and
         // refunds change, outbid and late buys as public P2ID notes to that account.
         const note = buildNetworkNote({
