@@ -42,21 +42,26 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
   // that sent it, which can differ after a switch in Bread. `held` mirrors the active list so a
   // change is persisted when it is made, not when React gets round to an updater (or never does,
   // after an unmount).
-  const held = useRef<BuyRecord[]>([]);
+  const held = useRef<{ key: string; list: BuyRecord[] }>({ key: "", list: [] });
   const active = useRef({ gameHex, accountHex });
   active.current = { gameHex, accountHex };
+  const historyKey = (game: string | undefined, account: string | null) => (game && account ? `${game}:${account}` : "");
   useEffect(() => {
-    held.current = gameHex && accountHex ? loadBuys(gameHex, accountHex) : [];
-    setBuys(held.current);
+    held.current = { key: historyKey(gameHex, accountHex), list: gameHex && accountHex ? loadBuys(gameHex, accountHex) : [] };
+    setBuys(held.current.list);
     setBalance(null);
   }, [gameHex, accountHex]);
   const changeBuys = useCallback((game: string, account: string, change: (current: BuyRecord[]) => BuyRecord[]) => {
-    if (active.current.gameHex === game && active.current.accountHex === account) {
-      held.current = change(held.current);
-      setBuys(held.current);
-    } else {
+    const key = historyKey(game, account);
+    if (historyKey(active.current.gameHex, active.current.accountHex) !== key) {
       change(loadBuys(game, account));
+      return;
     }
+    // After a switch away and back the mirror can still hold the other account's list until the
+    // effect reloads it, so only a mirror keyed to this account is trusted.
+    const base = held.current.key === key ? held.current.list : loadBuys(game, account);
+    held.current = { key, list: change(base) };
+    setBuys(held.current.list);
   }, []);
 
   const push = useCallback((text: string, kind: LogKind = "info", href?: string) => {
@@ -140,10 +145,16 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
     [refresh],
   );
 
+  const balanceRead = useRef(0);
   const refreshBalance = useCallback(async () => {
     if (!bread.connected || !bread.requestAssets || !snapshot) return;
+    // Only the newest read for the account on screen may write: reads finish in any order, and
+    // one started before a Bread account switch must not show the old account's funds.
+    const read = ++balanceRead.current;
+    const stale = () => read !== balanceRead.current || active.current.accountHex !== bread.accountHex;
     try {
       const assets = await bread.requestAssets();
+      if (stale()) return;
       const match = assets.find((asset) => {
         try {
           return parseAccountId(asset.faucetId).toString() === snapshot.feeFaucet;
@@ -153,22 +164,23 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
       });
       setBalance(match ? BigInt(match.amount) : 0n);
     } catch (caught) {
-      push(`Could not read the wallet balance: ${caught instanceof Error ? caught.message : String(caught)}`, "error");
+      if (!stale()) push(`Could not read the wallet balance: ${caught instanceof Error ? caught.message : String(caught)}`, "error");
     }
   }, [bread, push, snapshot]);
 
   const faucet = useCallback(
     () =>
       withBusy("faucet", async () => {
-        const ctx = requireContext();
-        const grant = await requestFaucetTokens(ctx.accountHex, { onStatus: (text) => push(text) });
+        // The grant needs only the account, so it works before the game state has loaded.
+        if (!bread.connected || !bread.accountHex) throw new Error("Connect the Bread wallet first.");
+        const grant = await requestFaucetTokens(bread.accountHex, { onStatus: (text) => push(text) });
         push(
           `Faucet note ${shortHex(grant.noteId)} created for ${formatUsdc(grant.amount, 0)} USDCx. Bread claims it automatically once its sync sees it.`,
           "ok",
           explorer.note(grant.noteId),
         );
       }),
-    [push, requireContext, withBusy],
+    [bread, push, withBusy],
   );
 
   const buy = useCallback(

@@ -200,22 +200,86 @@ describe("useFomoActions settle and faucet", () => {
     expect(result.current.log[0]).toMatchObject({ kind: "error", text: "The clock has not run out yet." });
   });
 
-  it("settles an expired round and waits for the round to advance", async () => {
+  it("settles an expired round: sends the note, then keeps polling until the round advances", async () => {
+    vi.useFakeTimers();
     sdk.roundPhase.mockReturnValue("expired");
-    const b = bread();
-    const refresh = vi.fn(async () => snapshot(state({ round: 5, keys: 0n })));
+    const request = vi.fn(async () => "w1");
+    const b = bread({ requestTransaction: request });
+    const polls: number[] = [];
+    const refresh = vi.fn(async () => {
+      polls.push(request.mock.calls.length);
+      return snapshot(state({ round: polls.length >= 3 ? 5 : 4, keys: 2n }));
+    });
     const { result } = setup(b, refresh);
-    await act(async () => void (await result.current.settle()));
-    expect(sdk.buildNetworkNote).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      const done = result.current.settle();
+      await vi.advanceTimersByTimeAsync(20_000);
+      await done;
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(polls.every((sent) => sent === 1)).toBe(true);
     expect(result.current.log.map((entry) => entry.text).join("\n")).toMatch(/Round 4 settled/);
     expect(result.current.busy).toBeNull();
   });
 
-  it("logs the faucet note it requested for the connected account", async () => {
-    sdk.faucet.mockResolvedValue({ noteId: "0xfaucetnote", amount: 100_000_000n, faucetWalletId: "f" });
-    const { result } = setup();
+  it("requests the faucet grant for the connected account and shows its progress, before the game has loaded", async () => {
+    sdk.faucet.mockImplementation(async (_account: string, options: { onStatus: (text: string) => void }) => {
+      options.onStatus("Reading faucet metadata...");
+      return { noteId: "0xfaucetnote", amount: 100_000_000n, faucetWalletId: "f" };
+    });
+    const { result } = renderHook(() =>
+      useFomoActions({ gameHex: GAME, snapshot: null, refresh: vi.fn(async () => null), bread: bread() }),
+    );
     await act(async () => void (await result.current.faucet()));
-    expect(sdk.faucet).toHaveBeenCalledWith(ME, expect.anything());
+    expect(sdk.faucet).toHaveBeenCalledWith(ME, expect.objectContaining({ onStatus: expect.any(Function) }));
+    const texts = result.current.log.map((entry) => entry.text);
+    expect(texts).toContain("Reading faucet metadata...");
     expect(result.current.log[0]).toMatchObject({ kind: "ok", href: "/n/0xfaucetnote" });
+  });
+});
+
+describe("useFomoActions balance", () => {
+  const asset = (amount: string) => [{ faucetId: "0xfee", amount }];
+
+  it("ignores a balance read that finishes after the Bread account changed", async () => {
+    let late!: (assets: unknown) => void;
+    const first = vi.fn(() => new Promise((resolve) => (late = resolve)));
+    const second = vi.fn(async () => asset("7"));
+    const { result, rerender } = renderHook(
+      ({ b }: { b: never }) => useFomoActions({ gameHex: GAME, snapshot: snapshot(state()), refresh: vi.fn(async () => null), bread: b }),
+      { initialProps: { b: bread({ requestAssets: first }) } },
+    );
+    let slow!: Promise<unknown>;
+    await act(async () => {
+      slow = result.current.refreshBalance();
+    });
+    rerender({ b: bread({ accountHex: "0xother", requestAssets: second }) });
+    await act(async () => void (await result.current.refreshBalance()));
+    expect(result.current.balance).toBe(7n);
+    await act(async () => {
+      late(asset("5"));
+      await slow;
+    });
+    expect(result.current.balance).toBe(7n);
+  });
+
+  it("keeps the newest read when two reads for the same account finish out of order", async () => {
+    const resolvers: Array<(assets: unknown) => void> = [];
+    const requestAssets = vi.fn(() => new Promise((resolve) => resolvers.push(resolve)));
+    const { result } = setup(bread({ requestAssets }));
+    let a!: Promise<unknown>;
+    let b!: Promise<unknown>;
+    await act(async () => {
+      a = result.current.refreshBalance();
+      b = result.current.refreshBalance();
+    });
+    await act(async () => {
+      resolvers[1](asset("9"));
+      await b;
+      resolvers[0](asset("1"));
+      await a;
+    });
+    expect(result.current.balance).toBe(9n);
   });
 });
