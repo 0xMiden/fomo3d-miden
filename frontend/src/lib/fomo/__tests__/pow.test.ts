@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { hexToBytes, powDigestLeading, solvePow, verifyPow } from "../pow";
 
@@ -27,16 +26,10 @@ describe("faucet proof of work", () => {
     expect(powDigestLeading(challenge, 42n)).not.toBe(powDigestLeading(challenge, 43n));
   });
 
-  it("matches the faucet protocol computed independently: sha256(challenge || nonce as u64 big-endian), first 8 bytes big-endian", () => {
-    const nonce = 0x0102030405060708n;
-    const input = Buffer.concat([Buffer.from(challenge), Buffer.from([1, 2, 3, 4, 5, 6, 7, 8])]);
-    const expected = createHash("sha256").update(input).digest().readBigUInt64BE(0);
-    expect(powDigestLeading(challenge, nonce)).toBe(expected);
-    // A solved nonce is accepted by the same independent computation.
-    const solved = solvePow(challenge, 1n << 60n, 7n)!;
-    const check = Buffer.alloc(8);
-    check.writeBigUInt64BE(solved);
-    const leading = createHash("sha256").update(Buffer.concat([Buffer.from(challenge), check])).digest().readBigUInt64BE(0);
-    expect(leading < 1n << 60n).toBe(true);
+  it("matches known answers computed outside this module with sha256(challenge || nonce as u64 big-endian), first 8 bytes big-endian", () => {
+    // Generated with Python hashlib: int.from_bytes(sha256(challenge + nonce.to_bytes(8, "big")).digest()[:8], "big").
+    expect(powDigestLeading(challenge, 0x0102030405060708n)).toBe(7092583713688754116n);
+    expect(powDigestLeading(challenge, 0n)).toBe(8670792641689531080n);
+    expect(powDigestLeading(challenge, 42n)).toBe(12987378895291631222n);
   });
 });
