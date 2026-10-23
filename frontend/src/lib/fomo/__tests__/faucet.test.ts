@@ -7,6 +7,8 @@ describe("readPowTarget", () => {
     expect(() => readPowTarget('{"challenge":"0x00"}')).toThrow(/target/);
     expect(() => readPowTarget('{"target":0}')).toThrow(/Invalid/);
     expect(() => readPowTarget('{"target":18446744073709551616}')).toThrow(/Invalid/);
+    expect(() => readPowTarget('{"target":1.5}')).toThrow(/target/);
+    expect(() => readPowTarget('{"target":1e3}')).toThrow(/target/);
   });
 });
 
@@ -63,12 +65,15 @@ describe("requestFaucetTokens", () => {
   });
 
   it("gives up after the configured attempts on a persistent 503", async () => {
+    let pows = 0;
     const busy = vi.fn(async (input: string | URL | Request) => {
       const path = new URL(String(input)).pathname.split("/").pop()!;
+      if (path === "pow") pows++;
       return path === "pow" ? new Response("busy", { status: 503 }) : new Response(responses[path], { status: 200 });
     }) as unknown as typeof fetch;
     await expect(
       requestFaucetTokens("0x00", { baseUrl: "https://f", fetchImpl: busy, solve: async () => 1n, attempts: 2, retryDelayMs: 0 }),
     ).rejects.toThrow(/HTTP 503/);
+    expect(pows).toBe(2);
   });
 });

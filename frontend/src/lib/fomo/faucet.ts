@@ -21,7 +21,7 @@ export const workerPowSolver: PowSolver = (challengeHex, target) =>
 
 /** `target` can exceed 2^53, so it is read from the raw JSON text, never from `JSON.parse`. */
 export function readPowTarget(rawJson: string): bigint {
-  const match = /"target"\s*:\s*(\d+)/.exec(rawJson);
+  const match = /"target"\s*:\s*(\d+)(?![\d.eE])/.exec(rawJson);
   if (!match) throw new Error("Faucet pow response lacks a target.");
   const target = BigInt(match[1]);
   if (target <= 0n || target >= 1n << 64n) throw new Error("Invalid faucet PoW target.");
