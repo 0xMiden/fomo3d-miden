@@ -1,13 +1,13 @@
-use {NoteRecipient} from miden::protocol::types
+use {AccountId} from miden::protocol::types
 use miden::core::word
 use miden::protocol::active_account
 use miden::protocol::active_note
 use miden::protocol::native_account
-use miden::protocol::note
-use {NOTE_TYPE_PRIVATE, NOTE_TYPE_PUBLIC} from miden::protocol::note
+use {NOTE_TYPE_PUBLIC} from miden::protocol::note
 use miden::protocol::output_note
 use miden::protocol::tx
 use miden::standards::assets::fungible_asset
+use miden::standards::notes::p2id
 use miden::standards::wallets::basic as basic_wallet
 
 # CONSTANTS
@@ -17,11 +17,10 @@ const ROUND_SLOT = word("fomo3d::game::round")
 const LEADER_SLOT = word("fomo3d::game::leader")
 const CONFIG_SLOT = word("fomo3d::game::config")
 const ASSET_SLOT = word("fomo3d::game::asset_id")
-const STATUS_SLOT = word("fomo3d::game::status")
-const CLAIM_SCRIPT_ROOT_0 = 13670824056742442059
-const CLAIM_SCRIPT_ROOT_1 = 8519043806234772049
-const CLAIM_SCRIPT_ROOT_2 = 11701870701898986077
-const CLAIM_SCRIPT_ROOT_3 = 9902604766490393369
+const WINDOW_SLOT = word("fomo3d::game::window")
+
+#! `NoteTag::with_account_target`: the 14 most significant bits of the high half of the prefix.
+const ACCOUNT_TARGET_TAG_MASK = 4294705152
 
 # ERRORS
 # =================================================================================================
@@ -30,133 +29,164 @@ const ERR_ASSET_COUNT = "buy note must contain one asset"
 const ERR_ASSET_ID = "buy note has the wrong asset"
 const ERR_ASSET_VALUE = "buy amount does not match the note asset"
 const ERR_NOT_EXPIRED = "round deadline has not passed"
-const ERR_ALREADY_SETTLED = "round is already settled"
-const ERR_NO_KEYS = "round has no keys"
+
+# HELPERS
+# =================================================================================================
+
+#! Pays `amount` of the game asset to `target` as a public P2ID note.
+#!
+#! Inputs: [amount, target_id_suffix, target_id_prefix]
+#! Outputs: []
+#!
+#! The serial number is the account nonce, which is unique per transaction; a transaction creates
+#! at most one such note. The tag is the standard account-target tag, so the target wallet finds
+#! and consumes the note on its own.
+#!
+#! Invocation: exec (from an account procedure)
+@locals(4)
+proc pay(amount: felt, target: AccountId)
+    loc_store.0
+    # => [suffix, prefix]
+
+    exec.active_account::get_nonce push.0.0.0
+    # => [SERIAL_NUM, suffix, prefix]
+
+    movup.5 movup.5
+    # => [suffix, prefix, SERIAL_NUM]
+
+    dup.1 u32split drop
+    # => [prefix_hi, suffix, prefix, SERIAL_NUM]
+
+    push.ACCOUNT_TARGET_TAG_MASK u32and
+    # => [tag, suffix, prefix, SERIAL_NUM]
+
+    movdn.2 push.NOTE_TYPE_PUBLIC movdn.3
+    # => [suffix, prefix, tag, note_type, SERIAL_NUM]
+
+    exec.p2id::prepare_note
+    # => [tag, note_type, RECIPIENT]
+
+    exec.output_note::create
+    # => [note_idx]
+
+    loc_store.1
+    # => []
+
+    loc_load.0 exec.fungible_asset::create_value
+    push.ASSET_SLOT[0..2]
+    exec.active_account::get_item
+    loc_load.1 movdn.8
+    # => [ASSET_ID, VALUE, note_idx]
+
+    call.basic_wallet::move_asset_to_note
+    dropw dropw drop
+    # => []
+end
 
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Records one paid key and extends the deadline.
+#! Records one paid key for the note's sender and extends the deadline.
 #!
-#! Inputs: [paid, SECRET_COMMITMENT, REFUND_RECIPIENT, pad(7)]
+#! Inputs: [paid, pad(15)]
 #! Outputs: [pad(16)]
 #!
 #! The network account must allow only the matching buy note script to call this procedure.
 #!
-#! Refunds the note if its maximum spend is below the current price or the round has ended.
+#! The sender of the buy note becomes the leader. Change above the price goes back to the sender
+#! as a public P2ID note. A buy below the price, after the deadline, or beyond the pot ceiling is
+#! refunded in full the same way.
 #!
 #! Invocation: call
 @account_procedure
-@locals(32)
-pub proc buy(paid: u32, recipient: NoteRecipient, refund_recipient: NoteRecipient)
+@locals(24)
+pub proc buy(paid: u32)
     loc_store.0
-    loc_storew_le.4 dropw
-    loc_storew_le.24 dropw
 
     exec.active_note::get_initial_num_assets
     eq.1 assert.err=ERR_ASSET_COUNT
 
     push.0 exec.active_note::get_asset
-    loc_storew_le.16 dropw
-    loc_storew_le.20 dropw
+    loc_storew_le.4 dropw
+    loc_storew_le.8 dropw
 
-    loc_load.20 loc_load.0 eq assert.err=ERR_ASSET_VALUE
-    loc_load.21 eq.0 assert.err=ERR_ASSET_VALUE
-    loc_load.22 eq.0 assert.err=ERR_ASSET_VALUE
-    loc_load.23 eq.0 assert.err=ERR_ASSET_VALUE
+    loc_load.8 loc_load.0 eq assert.err=ERR_ASSET_VALUE
+    loc_load.9 eq.0 assert.err=ERR_ASSET_VALUE
+    loc_load.10 eq.0 assert.err=ERR_ASSET_VALUE
+    loc_load.11 eq.0 assert.err=ERR_ASSET_VALUE
 
-    loc_loadw_le.16
+    loc_loadw_le.4
     push.ASSET_SLOT[0..2]
     exec.active_account::get_item
     assert_eqw.err=ERR_ASSET_ID
 
     push.ROUND_SLOT[0..2]
     exec.active_account::get_item
-    loc_storew_le.8 dropw
+    loc_storew_le.12 dropw
 
     push.CONFIG_SLOT[0..2]
     exec.active_account::get_item
-    loc_storew_le.12 dropw
+    loc_storew_le.16 dropw
 
     exec.tx::get_block_timestamp
     loc_store.1
 
-    push.STATUS_SLOT[0..2]
-    exec.active_account::get_item
-    movdn.3 drop drop drop
-    eq.0 assert.err=ERR_ALREADY_SETTLED
+    exec.active_note::get_sender
+    loc_store.2 loc_store.3
 
     exec.basic_wallet::move_note_assets_to_account
 
-    loc_load.1 loc_load.10 u32assert2 u32lt
-    loc_load.0 loc_load.9 u32assert2 u32gte
+    loc_load.1 loc_load.14 u32assert2 u32lt
+    loc_load.0 loc_load.13 u32assert2 u32gte
     and
-    loc_load.8 loc_load.9 add u32assert
-    loc_load.15 u32assert2 u32lte
+    loc_load.12 loc_load.13 add u32assert
+    loc_load.19 u32assert2 u32lte
     and
     if.true
-        loc_load.9 loc_store.2
+        loc_load.0 loc_load.13 sub
+        loc_store.20
 
-        loc_load.8 loc_load.2 add u32assert
-        loc_store.8
+        loc_load.12 loc_load.13 add u32assert
+        loc_store.12
 
-        loc_load.9 loc_load.12 add u32assert
-        loc_store.9
+        loc_load.13 loc_load.16 add u32assert
+        loc_store.13
 
-        loc_load.10 loc_load.13 add u32assert
-        loc_load.1 loc_load.14 add u32assert
+        loc_load.14 loc_load.17 add u32assert
+        loc_load.1 loc_load.18 add u32assert
         u32assert2 u32min
-        loc_store.10
+        loc_store.14
 
-        loc_load.11 add.1 u32assert
-        loc_store.11
+        loc_load.15 add.1 u32assert
+        loc_store.15
 
-        loc_load.0 loc_load.2 sub
-        loc_store.28
-
-        loc_load.28 neq.0
+        loc_load.20 neq.0
         if.true
-            loc_loadw_le.24
-            push.NOTE_TYPE_PRIVATE push.0
-            exec.output_note::create
-            loc_store.29
-
-            loc_load.28 exec.fungible_asset::create_value
-            padw loc_loadw_le.16
-            loc_load.29 movdn.8
-            call.basic_wallet::move_asset_to_note
-            dropw dropw drop
+            loc_load.3 loc_load.2 loc_load.20
+            exec.pay
         end
 
-        loc_loadw_le.8
+        loc_loadw_le.12
         push.ROUND_SLOT[0..2]
         exec.native_account::set_item
         dropw
 
-        loc_loadw_le.4
+        push.0.0 loc_load.3 loc_load.2
         push.LEADER_SLOT[0..2]
         exec.native_account::set_item
         dropw
     else
-        loc_loadw_le.24
-        push.NOTE_TYPE_PRIVATE push.0
-        exec.output_note::create
-        loc_store.29
-
-        loc_load.0 exec.fungible_asset::create_value
-        padw loc_loadw_le.16
-        loc_load.29 movdn.8
-        call.basic_wallet::move_asset_to_note
-        dropw dropw drop
+        loc_load.3 loc_load.2 loc_load.0
+        exec.pay
     end
 end
 
-#! Creates a secret-locked prize note after the deadline.
+#! Pays the pot to the leader after the deadline and opens the next round.
 #!
 #! Inputs: [pad(16)]
 #! Outputs: [pad(16)]
 #!
-#! Panics if the deadline has not passed, no key was bought, or the round settled.
+#! With no key sold, only the clock restarts. Panics if the deadline has not passed.
 #!
 #! Invocation: call
 @account_procedure
@@ -166,45 +196,43 @@ pub proc settle()
     exec.active_account::get_item
     loc_storew_le.0 dropw
 
-    push.STATUS_SLOT[0..2]
-    exec.active_account::get_item
-    movdn.3 drop drop drop
-    eq.0 assert.err=ERR_ALREADY_SETTLED
-
-    loc_load.3 neq.0 assert.err=ERR_NO_KEYS
-
     exec.tx::get_block_timestamp
+    loc_store.4
+
+    loc_load.4
     loc_load.2 u32assert2 u32gte
     assert.err=ERR_NOT_EXPIRED
 
-    push.LEADER_SLOT[0..2]
-    exec.active_account::get_item
-    loc_storew_le.4 dropw
-
-    push.ASSET_SLOT[0..2]
+    push.WINDOW_SLOT[0..2]
     exec.active_account::get_item
     loc_storew_le.8 dropw
 
-    loc_loadw_le.4
-    mem_storew_le.0 dropw
+    loc_load.3 neq.0
+    if.true
+        push.LEADER_SLOT[0..2]
+        exec.active_account::get_item
+        movup.2 drop movup.2 drop
+        loc_load.0
+        exec.pay
+    end
 
-    push.CLAIM_SCRIPT_ROOT_3.CLAIM_SCRIPT_ROOT_2.CLAIM_SCRIPT_ROOT_1.CLAIM_SCRIPT_ROOT_0
-    padw loc_loadw_le.4
-    push.4 push.0
-    exec.note::compute_and_store_recipient
+    push.0
+    loc_load.4 loc_load.8 add u32assert
+    loc_load.9
+    push.0
+    push.ROUND_SLOT[0..2]
+    exec.native_account::set_item
+    dropw
 
-    push.NOTE_TYPE_PUBLIC push.0
-    exec.output_note::create
-    loc_store.12
+    padw
+    push.LEADER_SLOT[0..2]
+    exec.native_account::set_item
+    dropw
 
-    loc_load.0 exec.fungible_asset::create_value
-    padw loc_loadw_le.8
-    loc_load.12 movdn.8
-    call.basic_wallet::move_asset_to_note
-    dropw dropw drop
-
-    push.0.0.0 push.1
-    push.STATUS_SLOT[0..2]
+    loc_load.10 add.1 u32assert
+    loc_store.10
+    loc_loadw_le.8
+    push.WINDOW_SLOT[0..2]
     exec.native_account::set_item
     dropw
 end

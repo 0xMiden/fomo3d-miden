@@ -1,47 +1,53 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@miden-sdk/miden-sdk", () => import("@/__tests__/mocks/miden-sdk"));
+
 import type { Word } from "@miden-sdk/miden-sdk";
 import { decodeGameStorage, holdsLeader, nextDeadline, readGameState, roundPhase } from "../game";
-import { EMPTY_LEADER } from "../types";
 
-const word = (values: bigint[], hex = "0xword") =>
-  ({ toFelts: () => values.map((value) => ({ asInt: () => value })), toHex: () => hex }) as unknown as Word;
+const word = (values: bigint[]) => ({ toFelts: () => values.map((value) => ({ asInt: () => value })) }) as unknown as Word;
 
 const storage = (slots: Record<string, Word | undefined>) => ({ getItem: (name: string) => slots[name] });
 
+/** `0x` + 30 hex digits; the mock splits it into an 8-byte prefix and a 7-byte suffix. */
+const LEADER_HEX = `0x${"ab".repeat(15)}`;
+const LEADER_PREFIX = BigInt(`0x${"ab".repeat(8)}`);
+const LEADER_SUFFIX = BigInt(`0x${"ab".repeat(7)}`);
+
 const liveSlots = {
   "fomo3d::game::round": word([2_100_000n, 1_200_000n, 1_800_000_000n, 2n]),
-  "fomo3d::game::leader": word([1n, 2n, 3n, 4n], "0xleader"),
+  "fomo3d::game::leader": word([LEADER_SUFFIX, LEADER_PREFIX, 0n, 0n]),
   "fomo3d::game::config": word([100_000n, 60n, 600n, 1_000_000_000n]),
-  "fomo3d::game::status": word([0n, 0n, 0n, 0n]),
+  "fomo3d::game::window": word([900n, 1_000_000n, 7n, 0n]),
 };
 
 describe("decodeGameStorage", () => {
-  it("reads round, config and status slots", () => {
+  it("reads the round, leader, config and window slots", () => {
     const state = decodeGameStorage(storage(liveSlots));
     expect(state).toEqual({
       pot: 2_100_000n,
       price: 1_200_000n,
       deadline: 1_800_000_000,
       keys: 2n,
-      settled: false,
-      leader: "0xleader",
+      leader: { suffix: LEADER_SUFFIX, prefix: LEADER_PREFIX },
       priceStep: 100_000n,
       extendSeconds: 60,
       capSeconds: 600,
       maxPot: 1_000_000_000n,
+      roundSeconds: 900,
+      startPrice: 1_000_000n,
+      round: 7,
     });
   });
 
-  it("marks a settled round and falls back to the empty leader", () => {
-    const state = decodeGameStorage(
-      storage({ ...liveSlots, "fomo3d::game::leader": undefined, "fomo3d::game::status": word([1n, 0n, 0n, 0n]) }),
-    );
-    expect(state.settled).toBe(true);
-    expect(state.leader).toBe(EMPTY_LEADER);
+  it("reads an all-zero or missing leader slot as no leader", () => {
+    expect(decodeGameStorage(storage({ ...liveSlots, "fomo3d::game::leader": word([0n, 0n, 0n, 0n]) })).leader).toBeNull();
+    expect(decodeGameStorage(storage({ ...liveSlots, "fomo3d::game::leader": undefined })).leader).toBeNull();
   });
 
-  it("rejects storage without the round slot", () => {
+  it("rejects storage without the round or window slot", () => {
     expect(() => decodeGameStorage(storage({}))).toThrow(/round slot/);
+    expect(() => decodeGameStorage(storage({ ...liveSlots, "fomo3d::game::window": undefined }))).toThrow(/window slot/);
   });
 });
 
@@ -69,16 +75,17 @@ describe("readGameState", () => {
 describe("round helpers", () => {
   const state = decodeGameStorage(storage(liveSlots));
 
-  it("detects when one of my commitments leads", () => {
-    expect(holdsLeader(state, ["0xother", "0xLEADER"])).toBe(true);
-    expect(holdsLeader(state, ["0xother"])).toBe(false);
-    expect(holdsLeader({ ...state, leader: EMPTY_LEADER }, [EMPTY_LEADER])).toBe(false);
+  it("detects when the connected account sent the last accepted buy", () => {
+    expect(holdsLeader(state, LEADER_HEX)).toBe(true);
+    expect(holdsLeader(state, `0x${"cd".repeat(15)}`)).toBe(false);
+    expect(holdsLeader(state, null)).toBe(false);
+    expect(holdsLeader({ ...state, leader: null }, LEADER_HEX)).toBe(false);
   });
 
-  it("derives the phase from the clock and the status", () => {
+  it("derives the phase from the clock alone", () => {
     expect(roundPhase(state, 1_799_999_999)).toBe("open");
+    expect(roundPhase(state, 1_800_000_000)).toBe("open");
     expect(roundPhase(state, 1_800_000_001)).toBe("expired");
-    expect(roundPhase({ ...state, settled: true }, 0)).toBe("settled");
   });
 
   it("caps the extension at block time plus the cap", () => {

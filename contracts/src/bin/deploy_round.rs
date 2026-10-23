@@ -20,7 +20,7 @@
 //! - `FOMO3D_ENV_FILE`       frontend env file to write        (default frontend/.env.local)
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     path::PathBuf,
     sync::Arc,
@@ -47,7 +47,6 @@ use miden_protocol::{
     address::{Address, NetworkId},
     asset::AssetId,
     note::{Note, NoteId},
-    vm::AdviceMap,
 };
 use miden_standards::{
     account::{
@@ -64,7 +63,6 @@ use sha2::{Digest, Sha256};
 const GAME: &str = include_str!("../../game.masm");
 const BUY: &str = include_str!("../../buy.masm");
 const SETTLE: &str = include_str!("../../settle.masm");
-const CLAIM: &str = include_str!("../../claim.masm");
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 struct RoundParams {
@@ -380,24 +378,15 @@ async fn main() -> Result<()> {
     let fee_asset = AssetId::new_fungible(fee_faucet);
     println!("chain fee faucet: {}", fee_faucet.to_hex());
 
-    let claim = CodeBuilder::default().compile_note_script(CLAIM)?;
-    let claim_advice = AdviceMap::from(BTreeMap::from([(
-        Word::from(claim.root()),
-        claim.to_elements(),
-    )]));
-    let component_code = CodeBuilder::default()
-        .compile_component_code("fomo3d::game", GAME)?
-        .with_advice_map(claim_advice.clone());
+    let component_code = CodeBuilder::default().compile_component_code("fomo3d::game", GAME)?;
     let buy = CodeBuilder::default()
         .with_dynamically_linked_package(component_code.as_ref())?
         .compile_note_script(BUY)?;
     let settle = CodeBuilder::default()
         .with_dynamically_linked_package(component_code.as_ref())?
-        .compile_note_script(SETTLE)?
-        .with_advice_map(claim_advice);
+        .compile_note_script(SETTLE)?;
     println!("buy root {}", Word::from(buy.root()).to_hex());
     println!("settle root {}", Word::from(settle.root()).to_hex());
-    println!("claim root {}", Word::from(claim.root()).to_hex());
 
     let deadline = header
         .timestamp()
@@ -421,7 +410,10 @@ async fn main() -> Result<()> {
                 ]),
             )?,
             slot("fomo3d::game::asset_id", fee_asset.to_word())?,
-            slot("fomo3d::game::status", Word::empty())?,
+            slot(
+                "fomo3d::game::window",
+                Word::from([params.round_seconds, params.start_price, 1, 0]),
+            )?,
         ],
         AccountComponentMetadata::new("fomo3d::game"),
     )?;
@@ -504,6 +496,6 @@ async fn main() -> Result<()> {
     fs::write(&env_file, env).with_context(|| format!("write {}", env_file.display()))?;
     println!("frontend env written to {}", env_file.display());
     println!("explorer: {}/account/{game_hex}", network.explorer);
-    println!("the public buy identifies the winning action; the prize claim itself is unlinkable");
+    println!("the pot is paid to the last accepted buyer as a public P2ID note; the winning buy is public");
     Ok(())
 }

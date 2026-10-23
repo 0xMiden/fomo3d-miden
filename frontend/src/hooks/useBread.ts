@@ -63,8 +63,6 @@ export function useBread() {
     requestTransaction: wallet.requestTransaction,
     waitForTransaction: wallet.waitForTransaction,
     requestAssets: wallet.requestAssets,
-    importPrivateNote: wallet.importPrivateNote,
-    requestConsume: wallet.requestConsume,
   };
 }
 

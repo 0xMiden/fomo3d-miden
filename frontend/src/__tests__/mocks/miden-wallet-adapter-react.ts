@@ -24,8 +24,6 @@ export const walletState = (overrides: Record<string, unknown> = {}) => ({
   requestTransaction: vi.fn(async () => "wallet-tx-1"),
   waitForTransaction: vi.fn(async () => ({ txHash: "0xabc", outputNotes: [] })),
   requestAssets: vi.fn(async () => []),
-  importPrivateNote: vi.fn(async () => "0xnote"),
-  requestConsume: vi.fn(async () => "wallet-tx-2"),
   ...overrides,
 });
 

@@ -2,25 +2,18 @@ use miden::protocol::active_note
 use miden::standards::note::note_target
 use fomo3d::game as game
 
-# CONSTANTS
-# =================================================================================================
-
-const NUM_STORAGE_ITEMS = 8
-
 # ERRORS
 # =================================================================================================
 
 const ERR_NOT_PUBLIC = "buy note must be public"
-const ERR_STORAGE = "buy note needs payout and refund recipient words"
 const ERR_ASSET_COUNT = "buy note needs one asset"
 
 # NOTE SCRIPT
 # =================================================================================================
 
-#! Buys one key for the active network account.
+#! Buys one key for the note's sender from the active network account.
 #!
-#! Storage contains payout and refund recipient digests.
-#! Assets contain one configured fungible token.
+#! The note carries one configured fungible asset, the maximum spend, and no storage.
 #!
 #! Inputs: [pad(16)]
 #! Outputs: [pad(16)]
@@ -33,18 +26,12 @@ pub proc main()
 
     exec.note_target::assert_active_account_is_network_target_account
 
-    push.NUM_STORAGE_ITEMS push.0
-    exec.active_note::get_bounded_storage
-    eq.NUM_STORAGE_ITEMS assert.err=ERR_STORAGE
-
     exec.active_note::get_initial_num_assets
     eq.1 assert.err=ERR_ASSET_COUNT
 
-    padw mem_loadw_le.4
-    padw mem_loadw_le.0
     push.0 exec.active_note::get_asset
     dropw
     movdn.3 drop drop drop
     call.game::buy
-    drop dropw dropw
+    drop
 end

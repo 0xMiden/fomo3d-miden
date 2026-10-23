@@ -6,6 +6,5 @@ export const previewState = (): RoundView => ({
   price: 1_300_000n,
   deadline: Math.floor(Date.now() / 1000) + 8 * 60 + 42,
   keys: 3n,
-  settled: false,
-  leader: "0x7a7b8cb48210...",
+  round: 1,
 });

@@ -12,7 +12,6 @@ use miden_client::account::{
 use miden_client::auth::{AuthSecretKey, AuthSingleSig};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
-use miden_client::note::NoteFile;
 use miden_client::rpc::{Endpoint, GrpcClient};
 use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionRequestBuilder, TransactionStatus};
@@ -20,20 +19,16 @@ use miden_client::Client;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::asset::{AssetId, FungibleAsset};
-use miden_protocol::note::{
-    Note, NoteAssets, NoteRecipient, NoteScript, NoteStorage, NoteTag, NoteType,
-    PartialNoteMetadata,
-};
+use miden_protocol::note::{Note, NoteScript, NoteTag};
 use miden_protocol::transaction::TransactionId;
 use miden_protocol::utils::serde::Deserializable;
-use miden_protocol::vm::AdviceMap;
-use miden_protocol::{Felt, Hasher, Word};
+use miden_protocol::Word;
 use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::{
-    FeeSponsorshipNote, NetworkAccountTarget, NoteExecutionHint, P2idNote, P2idNoteStorage,
+    FeeSponsorshipNote, NetworkAccountTarget, NoteExecutionHint, P2idNote, P2ideNote,
 };
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::{ExpirationTransactionScript, SendWalletNotesTransactionScript};
@@ -41,7 +36,6 @@ use miden_standards::tx_script::{ExpirationTransactionScript, SendWalletNotesTra
 const GAME: &str = include_str!("../../game.masm");
 const BUY: &str = include_str!("../../buy.masm");
 const SETTLE: &str = include_str!("../../settle.masm");
-const CLAIM: &str = include_str!("../../claim.masm");
 
 fn slot(name: &str, value: Word) -> Result<StorageSlot> {
     Ok(StorageSlot::with_value(StorageSlotName::new(name)?, value))
@@ -153,23 +147,10 @@ async fn submit_buy(
     faucet: AccountId,
     script: NoteScript,
     amount: u64,
-) -> Result<(Word, Word)> {
-    let secret = miden_client::rng::draw_word(client.rng());
-    let commitment = Hasher::merge(&[secret, Word::empty()]);
-    let refund_serial = miden_client::rng::draw_word(client.rng());
-    let refund_salt = miden_client::rng::draw_word(client.rng());
-    let refund = P2idNoteStorage::new(player.id())
-        .with_salt([refund_salt[0], refund_salt[1]])
-        .into_recipient(refund_serial);
-    let storage = commitment
-        .iter()
-        .chain(refund.digest().iter())
-        .copied()
-        .collect::<Vec<Felt>>();
+) -> Result<()> {
     let note = NoteBuilder::new(player.id(), client.rng())
         .script(script)
         .tag(NoteTag::with_account_target(game_id).as_u32())
-        .note_storage(storage)?
         .add_assets([FungibleAsset::new(faucet, amount)?.into()])
         .attachment(NetworkAccountTarget::new(
             game_id,
@@ -182,7 +163,7 @@ async fn submit_buy(
         .build()?;
     let tx = client.submit_new_transaction(player.id(), request).await?;
     println!("buy published by {}: {}", player.id().to_hex(), tx.to_hex());
-    Ok((commitment, secret))
+    Ok(())
 }
 
 #[tokio::main]
@@ -210,32 +191,13 @@ async fn main() -> Result<()> {
     let fee_faucet = config.fee_asset_id().faucet_id();
     let asset_id = AssetId::new_fungible(fee_faucet);
 
-    let claim = CodeBuilder::default().compile_note_script(CLAIM)?;
-    anyhow::ensure!(
-        Word::from(claim.root())
-            == Word::from(
-                [
-                    13670824056742442059u64,
-                    8519043806234772049,
-                    11701870701898986077,
-                    9902604766490393369
-                ]
-                .map(Felt::new_unchecked)
-            ),
-        "claim script root differs from pinned MASM game constant"
-    );
-    let mut claim_advice = AdviceMap::default();
-    claim_advice.insert(Word::from(claim.root()), claim.to_elements());
-    let component_code = CodeBuilder::default()
-        .compile_component_code("fomo3d::game", GAME)?
-        .with_advice_map(claim_advice.clone());
+    let component_code = CodeBuilder::default().compile_component_code("fomo3d::game", GAME)?;
     let buy = CodeBuilder::default()
         .with_dynamically_linked_package(component_code.as_ref())?
         .compile_note_script(BUY)?;
     let settle = CodeBuilder::default()
         .with_dynamically_linked_package(component_code.as_ref())?
-        .compile_note_script(SETTLE)?
-        .with_advice_map(claim_advice);
+        .compile_note_script(SETTLE)?;
 
     let game_component = AccountComponent::new(
         component_code,
@@ -250,7 +212,7 @@ async fn main() -> Result<()> {
                 Word::from([100_000u32, 20, 300, 10_000_000]),
             )?,
             slot("fomo3d::game::asset_id", asset_id.to_word())?,
-            slot("fomo3d::game::status", Word::empty())?,
+            slot("fomo3d::game::window", Word::from([300u32, 1_000_000, 1, 0]))?,
         ],
         AccountComponentMetadata::new("fomo3d::game"),
     )?;
@@ -258,6 +220,7 @@ async fn main() -> Result<()> {
         (buy.root(), 0u64.try_into()?),
         (settle.root(), 0u64.try_into()?),
         (P2idNote::script_root(), 0u64.try_into()?),
+        (P2ideNote::script_root(), 0u64.try_into()?),
         (FeeSponsorshipNote::script_root(), 0u64.try_into()?),
     ];
     let allowed = BTreeSet::from(fee_schedule.map(|(root, _)| root));
@@ -292,23 +255,13 @@ async fn main() -> Result<()> {
     wait_for_tx(&mut client, tx).await?;
 
     let players = [&first, &second, &third];
-    let mut leader_digest = Word::empty();
-    let mut leader_secret = Word::empty();
     for (index, player) in players.into_iter().enumerate() {
         let game_state = client
             .get_account(game.id())
             .await?
             .ok_or_else(|| anyhow!("game account missing"))?;
         let price = game_slot(&game_state, "fomo3d::game::round")?[1].as_canonical_u64();
-        (leader_digest, leader_secret) = submit_buy(
-            &mut client,
-            player,
-            game.id(),
-            fee_faucet,
-            buy.clone(),
-            price,
-        )
-        .await?;
+        submit_buy(&mut client, player, game.id(), fee_faucet, buy.clone(), price).await?;
         let state = wait_for_key_count(&mut client, game.id(), index as u64 + 1).await?;
         let round = game_slot(&state, "fomo3d::game::round")?;
         println!(
@@ -348,51 +301,44 @@ async fn main() -> Result<()> {
     client
         .submit_new_transaction(first.id(), settle_request)
         .await?;
+    // The pot is paid to the leader (the third player) as a public P2ID note, and the next round
+    // opens in the same account: the window slot's round number moves from 1 to 2.
+    let leader = Word::from([third.id().suffix(), third.id().prefix().as_felt(), 0u32.into(), 0u32.into()]);
     for _ in 0..60 {
         client.sync_state().await?;
         let state = client
             .get_account(game.id())
             .await?
             .ok_or_else(|| anyhow!("game account missing"))?;
-        if game_slot(&state, "fomo3d::game::status")?[0].as_canonical_u64() == 1 {
-            let winner = game_slot(&state, "fomo3d::game::leader")?;
-            anyhow::ensure!(
-                winner == leader_digest,
-                "leader digest changed before payout"
-            );
-            println!("round settled; winning secret commitment: {winner}");
-            let pot = game_slot(&state, "fomo3d::game::round")?[0].as_canonical_u64();
-            let prize = Note::new(
-                NoteAssets::new(vec![FungibleAsset::new(fee_faucet, pot)?.into()])?,
-                PartialNoteMetadata::new(game.id(), NoteType::Public),
-                NoteRecipient::new(
-                    winner,
-                    claim,
-                    NoteStorage::new(winner.iter().copied().collect())?,
-                ),
-            );
-            client
-                .import_notes(&[NoteFile::NoteId(prize.id())])
-                .await
-                .context("import public prize note")?;
-            client.sync_state().await?;
+        if game_slot(&state, "fomo3d::game::window")?[2].as_canonical_u64() == 2 {
+            let round = game_slot(&state, "fomo3d::game::round")?;
+            anyhow::ensure!(round[3].as_canonical_u64() == 0, "round did not reopen with zero keys");
+            println!("round settled and reopened; next deadline {}", round[2]);
+            break;
+        }
+        anyhow::ensure!(
+            game_slot(&state, "fomo3d::game::leader")? == leader,
+            "leader changed before payout"
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    for _ in 0..60 {
+        client.sync_state().await?;
+        let notes = client.get_consumable_notes(Some(third.id())).await?;
+        if let Some((record, _)) = notes.into_iter().next() {
+            let input: miden_client::transaction::InputNote = record.try_into()?;
             let request = TransactionRequestBuilder::new()
                 .expiration_delta(1000)
-                .input_notes([(prize, None)])
-                .extend_advice_map([(winner, leader_secret.iter().copied().collect::<Vec<_>>())])
-                .build()?;
-            let claim_tx = client
+                .build_consume_notes(vec![input.note().clone()])?;
+            let tx = client
                 .submit_new_transaction(third.id(), request)
                 .await
-                .context("claim prize")?;
-            wait_for_tx(&mut client, claim_tx).await?;
-            println!(
-                "prize claimed by private account; transaction: {}",
-                claim_tx.to_hex()
-            );
+                .context("consume prize")?;
+            wait_for_tx(&mut client, tx).await?;
+            println!("prize consumed by the winner's private account; transaction: {}", tx.to_hex());
             return Ok(());
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
-    Err(anyhow!("network builder did not settle the round"))
+    Err(anyhow!("the prize note never reached the winner"))
 }

@@ -14,17 +14,10 @@ export const shortHex = (hex: string, head = 8, tail = 4) =>
 
 /**
  * Wraps a request for `requestTransaction`. `address` must be the connected account (Bread
- * refuses anything else). `importNotes` are serialized `NoteFile`s or bare `Note`s the wallet
- * imports before executing, which the claim and refund flows use for their input note.
+ * refuses anything else). The game's flows only publish notes, so no input notes are imported.
  */
-export function customTransaction(
-  address: string,
-  recipientHex: string,
-  request: TransactionRequest,
-  inputNoteIds: string[] = [],
-  importNotes: Uint8Array[] = [],
-): MidenTransaction {
-  return Transaction.createCustomTransaction(canonicalAddress(address), recipientHex, request, inputNoteIds, importNotes);
+export function customTransaction(address: string, recipientHex: string, request: TransactionRequest): MidenTransaction {
+  return Transaction.createCustomTransaction(canonicalAddress(address), recipientHex, request);
 }
 
 export const isValidAccountHex = (hex: string) => /^0x[0-9a-f]{30}$/.test(hex);

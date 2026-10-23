@@ -3,8 +3,8 @@ import { FAUCET_URL, NETWORK_LABEL } from "@/config";
 import type { Bread } from "@/hooks/useBread";
 import type { FomoActions } from "@/hooks/useFomoActions";
 import { explorer, shortHex } from "@/lib/fomo/bread";
-import { roundPhase } from "@/lib/fomo/game";
-import type { KeyRecord } from "@/lib/fomo/secrets";
+import type { BuyRecord } from "@/lib/fomo/buys";
+import { holdsLeader, roundPhase } from "@/lib/fomo/game";
 import { formatUsdc, parseUsdc, type GameState } from "@/lib/fomo/types";
 
 export interface PlayPanelProps {
@@ -14,14 +14,17 @@ export interface PlayPanelProps {
   actions: FomoActions;
 }
 
-function keyStatus(record: KeyRecord, state: GameState | null): { label: string; tone: "lead" | "won" | "idle" | "lost" } {
-  const isLeader = !!state && state.leader.toLowerCase() === record.commitment.toLowerCase();
-  if (record.forwardedTxHash) return { label: "PRIZE CLAIMED", tone: "won" };
-  if (record.claimedTxHash) return { label: "PRIZE HELD", tone: "won" };
-  if (record.refundTxHash) return { label: "REFUNDED", tone: "idle" };
-  if (isLeader && state?.settled) return { label: "WINNER", tone: "won" };
-  if (isLeader) return { label: "LEADING", tone: "lead" };
-  if (!record.txHash) return { label: "PENDING", tone: "idle" };
+type BuyStatus = { label: "PENDING" | "LEADING" | "OUTBID" | "ENDED"; tone: "lead" | "idle" | "lost" };
+
+/**
+ * The price rises by one step per accepted key, so a price still equal to the one shown at buy
+ * time means no key (mine or anyone's) was accepted since: the note is still pending.
+ */
+function buyStatus(record: BuyRecord, state: GameState | null, accountHex: string | null): BuyStatus {
+  if (!record.txHash || !state) return { label: "PENDING", tone: "idle" };
+  if (record.round < state.round) return { label: "ENDED", tone: "idle" };
+  if (BigInt(record.priceAtBuy) === state.price) return { label: "PENDING", tone: "idle" };
+  if (holdsLeader(state, accountHex)) return { label: "LEADING", tone: "lead" };
   return { label: "OUTBID", tone: "lost" };
 }
 
@@ -29,7 +32,6 @@ export function PlayPanel({ state, now, bread, actions }: PlayPanelProps) {
   const phase = state ? roundPhase(state, now) : "open";
   const [spendText, setSpendText] = useState("");
   const [touched, setTouched] = useState(false);
-  const [inviteCode, setInviteCode] = useState("");
   useEffect(() => {
     if (!touched && state) setSpendText(formatUsdc(state.price, 6).replace(/0+$/, "").replace(/\.$/, ""));
   }, [state, touched]);
@@ -38,13 +40,13 @@ export function PlayPanel({ state, now, bread, actions }: PlayPanelProps) {
   const connected = bread.connected;
   const busy = actions.busy;
   const canBuy = connected && !busy && !!state && phase === "open" && spendValid;
-  const canSettle = connected && !busy && !!state && phase === "expired" && state.keys > 0n;
+  const canSettle = connected && !busy && !!state && phase === "expired";
 
   useEffect(() => {
     if (connected) void actions.refreshBalance();
-    // Only re-read when the connection or the fee asset changes.
+    // Only re-read when the connection changes or the chain moved (a key, a refund or a payout).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, state?.leader, state?.keys]);
+  }, [connected, state?.keys, state?.round]);
 
   return (
     <div className="play-stack">
@@ -91,61 +93,39 @@ export function PlayPanel({ state, now, bread, actions }: PlayPanelProps) {
           />
         </label>
         <button type="button" className="btn btn-primary btn-big" onClick={() => spend !== null && void actions.buy(spend)} disabled={!canBuy}>
-          {busy === "buy" ? "BUYING…" : phase === "open" ? "BUY KEY" : phase === "expired" ? "TIME IS UP" : "ROUND SETTLED"}
+          {busy === "buy" ? "BUYING…" : phase === "open" ? "BUY KEY" : "TIME IS UP"}
         </button>
         <small>
-          One key at the price when the note is consumed{state ? ` (now ${formatUsdc(state.price)} USDCX, +${state.extendSeconds}s on the clock)` : ""}. Change above the price is refunded privately.
+          One key at the price when the note is consumed{state ? ` (now ${formatUsdc(state.price)} USDCX, +${state.extendSeconds}s on the clock)` : ""}. Change above the price comes back to your Bread account.
         </small>
       </section>
 
-      {state && phase !== "open" && (
+      {state && phase === "expired" && (
         <section className="settle-row" aria-label="Settle">
-          {phase === "expired" ? (
-            <>
-              <span>THE CLOCK RAN OUT. ANYONE CAN SETTLE.</span>
-              <button type="button" className="btn btn-primary" onClick={() => void actions.settle()} disabled={!canSettle}>
-                {busy === "settle" ? "SETTLING…" : state.keys === 0n ? "NO KEYS SOLD" : "SETTLE ROUND"}
-              </button>
-            </>
-          ) : (
-            <span>ROUND SETTLED. PRIZE: {formatUsdc(state.pot)} USDCX FOR THE WINNING SECRET.</span>
-          )}
+          <span>{state.keys > 0n ? "THE CLOCK RAN OUT. ANYONE CAN SETTLE." : "THE CLOCK RAN OUT WITH NO KEYS. ANYONE CAN RESTART IT."}</span>
+          <button type="button" className="btn btn-primary" onClick={() => void actions.settle()} disabled={!canSettle}>
+            {busy === "settle" ? "SETTLING…" : state.keys > 0n ? "SETTLE ROUND" : "RESTART CLOCK"}
+          </button>
         </section>
       )}
 
-      <section className="keys-list" aria-label="My keys">
-        <div className="section-kicker">// MY KEYS (SECRETS LIVE IN THIS BROWSER)</div>
-        {actions.inviteNeeded && (
-          <label className="field">
-            <span>MAINNET ACCESS CODE (REGISTERS THIS BROWSER&apos;S CLAIM WALLET ONCE)</span>
-            <input value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} autoComplete="off" />
-          </label>
-        )}
-        {actions.keys.length === 0 ? (
-          <p className="muted">No keys bought from this browser yet.</p>
+      <section className="keys-list" aria-label="My buys">
+        <div className="section-kicker">// MY BUYS</div>
+        {actions.buys.length === 0 ? (
+          <p className="muted">No buys from this browser yet.</p>
         ) : (
           <ul>
-            {actions.keys.map((record) => {
-              const status = keyStatus(record, state);
-              const canClaim =
-                connected && !busy && !!state && state.settled && (status.label === "WINNER" || status.label === "PRIZE HELD");
+            {actions.buys.map((record) => {
+              const status = buyStatus(record, state, bread.accountHex);
               return (
-                <li key={record.commitment}>
+                <li key={`${record.at}:${record.noteId ?? ""}`}>
                   <span className={`key-status key-${status.tone}`}>{status.label}</span>
-                  <span className="key-commitment" title={record.commitment}>{shortHex(record.commitment, 10, 6)}</span>
+                  <span className="key-note" title={record.noteId}>
+                    ROUND {String(record.round).padStart(3, "0")}{record.noteId ? ` · ${shortHex(record.noteId, 10, 6)}` : ""}
+                  </span>
                   <span className="key-amount">{formatUsdc(BigInt(record.maxSpend))} USDCX</span>
                   <span className="key-actions">
                     {record.txHash && <a href={explorer.tx(record.txHash)} target="_blank" rel="noreferrer">TX ↗</a>}
-                    {canClaim && (
-                      <button type="button" className="btn btn-primary" onClick={() => void actions.claim(record, inviteCode.trim() || undefined)}>
-                        {busy === "claim" ? "CLAIMING…" : status.label === "PRIZE HELD" ? "SEND TO BREAD" : actions.inviteNeeded ? "REGISTER & CLAIM" : "CLAIM PRIZE"}
-                      </button>
-                    )}
-                    {status.tone === "lost" && !record.refundTxHash && (
-                      <button type="button" className="btn btn-ghost" onClick={() => void actions.recoverRefund(record)} disabled={!connected || busy !== null}>
-                        {busy === "refund" ? "CHECKING…" : "RECOVER REFUND"}
-                      </button>
-                    )}
                   </span>
                 </li>
               );

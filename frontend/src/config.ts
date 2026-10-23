@@ -35,5 +35,3 @@ export const WALLET_NETWORK = (MIDEN_NETWORK === "localhost" ? "localnet" : MIDE
 /** Precompiled note scripts written by `cargo run --bin fomo3d-masm-build`. */
 export const SCRIPTS_BASE = "/fomo3d";
 export const GAME_POLL_MS = 10_000;
-/** Blocks a player transaction stays valid; blocks are a few seconds apart. */
-export const TX_EXPIRATION_BLOCKS = 200;

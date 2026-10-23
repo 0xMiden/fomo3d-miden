@@ -5,9 +5,8 @@ export type GameState = {
   /** Unix seconds (block timestamp) after which settle is allowed. */
   deadline: number;
   keys: bigint;
-  settled: boolean;
-  /** Hex of the leading secret commitment word, as `Word.toHex()` prints it. */
-  leader: string;
+  /** Account id felts of the sender of the last accepted buy; null while the round has no key. */
+  leader: { suffix: bigint; prefix: bigint } | null;
   /** Price increase per accepted key, base units. */
   priceStep: bigint;
   /** Seconds each accepted key adds to the deadline. */
@@ -16,10 +15,13 @@ export type GameState = {
   capSeconds: number;
   /** Pot ceiling, base units. */
   maxPot: bigint;
+  /** Length of a fresh round in seconds; settle sets the next deadline to block time plus this. */
+  roundSeconds: number;
+  /** Key price a fresh round opens with, base units. */
+  startPrice: bigint;
+  /** Round counter; settle increments it. */
+  round: number;
 };
-
-/** The leader slot of a round with no keys. */
-export const EMPTY_LEADER = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 export const USDCX_DECIMALS = 6;
 

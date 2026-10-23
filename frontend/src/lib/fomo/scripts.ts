@@ -1,7 +1,7 @@
 import { NoteScript } from "@miden-sdk/miden-sdk";
 import { SCRIPTS_BASE } from "@/config";
 
-export type ScriptName = "buy" | "settle" | "claim";
+export type ScriptName = "buy" | "settle";
 export type ScriptRoots = Record<ScriptName, string>;
 
 type Fetch = typeof fetch;
@@ -36,7 +36,7 @@ export async function loadRoots(fetchImpl: Fetch = fetch, base = SCRIPTS_BASE): 
   const response = await fetchImpl(`${base}/roots.json`, { cache: "no-store" });
   if (!response.ok) throw new Error(`Cannot load script roots (${response.status}).`);
   const roots = (await response.json()) as Partial<ScriptRoots>;
-  for (const name of ["buy", "settle", "claim"] as const) {
+  for (const name of ["buy", "settle"] as const) {
     if (typeof roots[name] !== "string") throw new Error(`roots.json lacks ${name}`);
   }
   return roots as ScriptRoots;

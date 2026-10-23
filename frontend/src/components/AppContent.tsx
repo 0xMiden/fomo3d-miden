@@ -32,7 +32,7 @@ function LiveRound({ now }: { now: number }) {
   const bread = useBread();
   const actions = useFomoActions({ gameHex: GAME_ADDRESS, snapshot: game.snapshot, refresh: game.refresh, bread });
   const state = game.state;
-  const isLeader = !!state && holdsLeader(state, actions.keys.map((key) => key.commitment));
+  const isLeader = !!state && holdsLeader(state, bread.accountHex);
   return (
     <FomoDashboard
       state={state ?? previewState()}
