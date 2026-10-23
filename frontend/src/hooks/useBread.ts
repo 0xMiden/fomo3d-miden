@@ -36,9 +36,9 @@ export function useBread() {
   }, [wallet]);
 
   useEffect(() => {
-    if (attempted.current || !installed || wallet.connected || wallet.connecting) return;
+    if (attempted.current || !installed || wallet.connecting) return;
     attempted.current = true;
-    void connect();
+    if (!wallet.connected) void connect();
   }, [connect, installed, wallet.connected, wallet.connecting]);
 
   const accountHex = (() => {

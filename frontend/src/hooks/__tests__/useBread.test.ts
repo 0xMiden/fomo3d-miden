@@ -13,9 +13,15 @@ describe("useBread", () => {
     const connect = vi.fn(async () => {
       throw new Error("WalletConnectionError: NETWORK_NOT_GRANTED");
     });
-    vi.mocked(useMidenFiWallet).mockReturnValue(walletState({ connect }) as never);
+    // A fresh wallet object per render, as the provider's context value is, so a missing guard
+    // would re-run the effect on every render.
+    let connecting = false;
+    vi.mocked(useMidenFiWallet).mockImplementation(() => walletState({ connect, connecting }) as never);
     const { result, rerender } = renderHook(() => useBread());
     await act(async () => {});
+    connecting = true;
+    rerender();
+    connecting = false;
     rerender();
     await act(async () => {});
     expect(connect).toHaveBeenCalledTimes(1);
@@ -24,5 +30,19 @@ describe("useBread", () => {
       await result.current.connect();
     });
     expect(connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reconnect after the user disconnects a wallet that was already connected", async () => {
+    const connect = vi.fn(async () => {});
+    let connected = true;
+    vi.mocked(useMidenFiWallet).mockImplementation(
+      () => walletState({ connect, connected, address: connected ? "abc" : null }) as never,
+    );
+    const { rerender } = renderHook(() => useBread());
+    await act(async () => {});
+    connected = false;
+    rerender();
+    await act(async () => {});
+    expect(connect).not.toHaveBeenCalled();
   });
 });
