@@ -54,21 +54,27 @@ describe("decodeGameStorage", () => {
 describe("readGameState", () => {
   it("imports the account once, syncs, then decodes", async () => {
     const calls: string[] = [];
+    const handles: unknown[] = [];
     let imported = false;
     const client = {
-      getAccount: async () => {
+      getAccount: async (id: unknown) => {
+        handles.push(id);
         calls.push("get");
         return imported ? { storage: () => storage(liveSlots) } : undefined;
       },
-      importAccountById: async () => {
+      importAccountById: async (id: unknown) => {
+        handles.push(id);
         calls.push("import");
         imported = true;
       },
       syncState: async () => calls.push("sync"),
     };
-    const state = await readGameState(client, {} as never);
+    const state = await readGameState(client, LEADER_HEX);
     expect(state.keys).toBe(2n);
     expect(calls).toEqual(["get", "import", "sync", "get"]);
+    // The SDK consumes an AccountId passed by value, so every call needs its own.
+    expect(handles).toHaveLength(3);
+    expect(new Set(handles).size).toBe(3);
   });
 });
 

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMiden, useMidenClient } from "@miden-sdk/react";
-import { AccountId } from "@miden-sdk/miden-sdk";
 import { GAME_POLL_MS } from "@/config";
 import { readGameState } from "@/lib/fomo/game";
 import type { GameState } from "@/lib/fomo/types";
@@ -27,7 +26,7 @@ export function useGameState(gameHex: string | undefined, pollMs = GAME_POLL_MS)
     const run = (async () => {
       try {
         const next = await runExclusive(async () => {
-          const state = await readGameState(client, AccountId.fromHex(gameHex));
+          const state = await readGameState(client, gameHex);
           const feeFaucet = (await client.feeFaucetId()).toString();
           const syncHeight = await client.getSyncHeight();
           return { state, feeFaucet, syncHeight } satisfies GameSnapshot;
