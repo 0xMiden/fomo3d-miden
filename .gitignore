@@ -8,3 +8,4 @@
 .idea/
 store.sqlite3
 keystore/
+.vercel
