@@ -14,7 +14,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
       config={{ rpcUrl: MIDEN_RPC_URL, prover: MIDEN_PROVER, useWorker: false }}
       loadingComponent={<div className="loading">Loading Miden client...</div>}
     >
-      <MidenFiSignerProvider appName={APP_NAME} network={WALLET_NETWORK} autoConnect={true}>
+      <MidenFiSignerProvider appName={APP_NAME} network={WALLET_NETWORK} autoConnect={false}>
         {children}
       </MidenFiSignerProvider>
     </MidenProvider>

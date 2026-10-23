@@ -60,6 +60,7 @@ export function PlayPanel({ state, now, bread, actions }: PlayPanelProps) {
             <button type="button" className="btn btn-primary" onClick={() => void bread.connect()} disabled={bread.connecting}>
               {bread.connecting ? "CONNECTING…" : "CONNECT BREAD"}
             </button>
+            {bread.error && <em className="wallet-error" role="alert">{bread.error}</em>}
           </>
         ) : (
           <>
