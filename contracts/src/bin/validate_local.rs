@@ -361,10 +361,10 @@ mod tests {
     #[test]
     fn allowlist_matches_the_deployed_recipe() {
         let script = |source: &str| CodeBuilder::default().compile_note_script(source).unwrap();
-        let roots = allowlisted_roots(
-            script("@note_script\npub proc main()\n    push.1 drop\nend").root(),
-            script("@note_script\npub proc main()\n    push.2 drop\nend").root(),
-        );
+        let buy = script("@note_script\npub proc main()\n    push.1 drop\nend").root();
+        let settle = script("@note_script\npub proc main()\n    push.2 drop\nend").root();
+        let roots = allowlisted_roots(buy, settle);
+        assert!(roots.contains(&buy) && roots.contains(&settle));
         assert_eq!(roots.len(), 6);
         assert!(roots.contains(&NetworkAccountConfigNote::script_root()));
         assert_eq!(BTreeSet::from(roots).len(), 6);
