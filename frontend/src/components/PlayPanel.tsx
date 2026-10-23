@@ -24,6 +24,8 @@ type BuyStatus = { label: "PENDING" | "LEADING" | "OUTBID" | "ENDED" | "UNCONFIR
 function buyStatus(record: BuyRecord, state: GameState | null, accountHex: string | null): BuyStatus {
   if (record.outcome === "unconfirmed") return { label: "UNCONFIRMED", tone: "idle" };
   if (record.outcome === "ended") return { label: "ENDED", tone: "idle" };
+  // Without a hash the wallet may never have sent it, so a newer round says nothing about it.
+  if (!record.txHash && !record.outcome) return { label: "PENDING", tone: "idle" };
   if (state && record.round < state.round) return { label: "ENDED", tone: "idle" };
   if (record.outcome !== "led" || !state) return { label: "PENDING", tone: "idle" };
   if (holdsLeader(state, accountHex)) return { label: "LEADING", tone: "lead" };

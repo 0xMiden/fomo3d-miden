@@ -148,6 +148,7 @@ describe("PlayPanel", () => {
   it("labels a buy whose flow never finished PENDING, or ENDED once its round is over, and never guesses from the live leader", () => {
     const a = actions({
       buys: [
+        buy({ at: 6, noteId: "0xnotsent", txHash: undefined, round: 3 }),
         buy({ at: 5, noteId: "0xpending", txHash: undefined }),
         buy({ at: 4, noteId: "0xwaiting", priceAtBuy: "1200000" }),
         buy({ at: 3, noteId: "0xmoved", priceAtBuy: "1000000" }),
@@ -156,10 +157,10 @@ describe("PlayPanel", () => {
     });
     const labels = () => screen.getAllByText(/^(PENDING|LEADING|OUTBID|ENDED|UNCONFIRMED)$/).map((el) => el.textContent);
     const { rerender } = render(<PlayPanel state={{ ...state, leader: ME_LEADER }} now={1} bread={bread()} actions={a} />);
-    expect(labels()).toEqual(["PENDING", "PENDING", "PENDING", "ENDED"]);
+    expect(labels()).toEqual(["PENDING", "PENDING", "PENDING", "PENDING", "ENDED"]);
     expect(screen.getAllByRole("link", { name: "TX ↗" })).toHaveLength(3);
     rerender(<PlayPanel state={state} now={1} bread={bread()} actions={a} />);
-    expect(labels()).toEqual(["PENDING", "PENDING", "PENDING", "ENDED"]);
+    expect(labels()).toEqual(["PENDING", "PENDING", "PENDING", "PENDING", "ENDED"]);
     expect(screen.queryByRole("button", { name: /CLAIM|REFUND/ })).toBeNull();
   });
 
