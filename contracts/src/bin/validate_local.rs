@@ -19,7 +19,7 @@ use miden_client::Client;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::component::AccountComponentMetadata;
 use miden_protocol::asset::{AssetId, FungibleAsset};
-use miden_protocol::note::{Note, NoteScript, NoteScriptRoot, NoteTag};
+use miden_protocol::note::{Note, NoteScript, NoteTag};
 use miden_protocol::transaction::TransactionId;
 use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::Word;
@@ -27,28 +27,16 @@ use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::config::NetworkAccountConfigNote;
-use miden_standards::note::{
-    FeeSponsorshipNote, NetworkAccountTarget, NoteExecutionHint, P2idNote, P2ideNote,
-};
+use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::{ExpirationTransactionScript, SendWalletNotesTransactionScript};
+
+#[path = "../recipe.rs"]
+mod recipe;
 
 const GAME: &str = include_str!("../../game.masm");
 const BUY: &str = include_str!("../../buy.masm");
 const SETTLE: &str = include_str!("../../settle.masm");
-
-/// Every note script the game account accepts; `deploy_round` allowlists the same set.
-fn allowlisted_roots(buy: NoteScriptRoot, settle: NoteScriptRoot) -> [NoteScriptRoot; 6] {
-    [
-        buy,
-        settle,
-        P2idNote::script_root(),
-        P2ideNote::script_root(),
-        FeeSponsorshipNote::script_root(),
-        NetworkAccountConfigNote::script_root(),
-    ]
-}
 
 fn slot(name: &str, value: Word) -> Result<StorageSlot> {
     Ok(StorageSlot::with_value(StorageSlotName::new(name)?, value))
@@ -229,7 +217,7 @@ async fn main() -> Result<()> {
         ],
         AccountComponentMetadata::new("fomo3d::game"),
     )?;
-    let roots = allowlisted_roots(buy.root(), settle.root());
+    let roots = recipe::allowlisted_roots(buy.root(), settle.root());
     let mut policy = BasicConstantFeePolicy::new();
     for root in roots {
         policy = policy.with_fee(root, 0u64.try_into()?);
@@ -352,21 +340,4 @@ async fn main() -> Result<()> {
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     Err(anyhow!("the prize note never reached the winner"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn allowlist_matches_the_deployed_recipe() {
-        let script = |source: &str| CodeBuilder::default().compile_note_script(source).unwrap();
-        let buy = script("@note_script\npub proc main()\n    push.1 drop\nend").root();
-        let settle = script("@note_script\npub proc main()\n    push.2 drop\nend").root();
-        let roots = allowlisted_roots(buy, settle);
-        assert!(roots.contains(&buy) && roots.contains(&settle));
-        assert_eq!(roots.len(), 6);
-        assert!(roots.contains(&NetworkAccountConfigNote::script_root()));
-        assert_eq!(BTreeSet::from(roots).len(), 6);
-    }
 }

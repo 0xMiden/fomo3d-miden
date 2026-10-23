@@ -55,10 +55,12 @@ use miden_standards::{
         wallets::BasicWallet,
     },
     code_builder::CodeBuilder,
-    note::{config::NetworkAccountConfigNote, FeeSponsorshipNote, P2idNote, P2ideNote},
     tx_script::{ExpirationTransactionScript, SendWalletNotesTransactionScript},
 };
 use sha2::{Digest, Sha256};
+
+#[path = "../recipe.rs"]
+mod recipe;
 
 const GAME: &str = include_str!("../../game.masm");
 const BUY: &str = include_str!("../../buy.masm");
@@ -486,22 +488,16 @@ async fn main() -> Result<()> {
         ],
         AccountComponentMetadata::new("fomo3d::game"),
     )?;
-    // Every allowlisted script needs a fee entry, including the three defaults the network
-    // builder relies on (config, fee sponsorship, P2ID). All zero: the game pays its own fees.
-    // P2IDE is what a wallet's recallable send produces (Bread 1.17.5 on mainnet); without it
-    // the funding note fails "input note script root is not in the note script allowlist".
-    let fees = [
-        (buy.root(), 0u64.try_into()?),
-        (settle.root(), 0u64.try_into()?),
-        (P2idNote::script_root(), 0u64.try_into()?),
-        (P2ideNote::script_root(), 0u64.try_into()?),
-        (FeeSponsorshipNote::script_root(), 0u64.try_into()?),
-        (NetworkAccountConfigNote::script_root(), 0u64.try_into()?),
-    ];
-    let allowed = BTreeSet::from(fees.map(|(root, _)| root));
+    // Every allowlisted script needs a fee entry. All zero: the game pays its own fees.
+    let roots = recipe::allowlisted_roots(buy.root(), settle.root());
+    let mut policy = BasicConstantFeePolicy::new();
+    for root in roots {
+        policy = policy.with_fee(root, 0u64.try_into()?);
+    }
+    let allowed = BTreeSet::from(roots);
     let fee_manager = FeePolicyManager::builder()
         .fee_faucet_id(fee_faucet)
-        .active_fee_policy(BasicConstantFeePolicy::new().with_fees(fees).into())
+        .active_fee_policy(policy.into())
         .build();
     let auth = AuthNetworkAccount::custom(allowed, fee_manager)?.with_allowed_tx_scripts([
         ExpirationTransactionScript::script_root(),
@@ -715,12 +711,13 @@ mod tests {
             fs::read_to_string(root.join("latest").join("marker")).unwrap(),
             "ok"
         );
-        // Run again over an existing link, as a second deploy into the same root does.
-        link_latest(&root, &run);
-        assert_eq!(
-            fs::read_link(root.join("latest")).unwrap(),
-            PathBuf::from("123")
-        );
+        // A later deploy into the same root replaces the link with its own directory.
+        let next = base.join("target").join("124");
+        fs::create_dir_all(&next).unwrap();
+        fs::write(next.join("marker"), "next").unwrap();
+        link_latest(&root, &next);
+        assert_eq!(fs::read_link(root.join("latest")).unwrap(), PathBuf::from("124"));
+        assert_eq!(fs::read_to_string(root.join("latest").join("marker")).unwrap(), "next");
         fs::remove_dir_all(&base).unwrap();
     }
 }
