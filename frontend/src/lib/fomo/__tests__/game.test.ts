@@ -90,7 +90,8 @@ describe("round helpers", () => {
 
   it("derives the phase from the clock alone", () => {
     expect(roundPhase(state, 1_799_999_999)).toBe("open");
-    expect(roundPhase(state, 1_800_000_000)).toBe("open");
+    // The game refuses a buy at block time == deadline and lets settle run from that second.
+    expect(roundPhase(state, 1_800_000_000)).toBe("expired");
     expect(roundPhase(state, 1_800_000_001)).toBe("expired");
   });
 

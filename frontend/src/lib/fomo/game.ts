@@ -66,7 +66,7 @@ export const holdsLeader = (state: GameState, accountHex: string | null | undefi
 export type RoundPhase = "open" | "expired";
 
 /** `now` is wall clock seconds; block timestamps lag it slightly, so "expired" may flip a little late on chain. */
-export const roundPhase = (state: GameState, now: number): RoundPhase => (now > state.deadline ? "expired" : "open");
+export const roundPhase = (state: GameState, now: number): RoundPhase => (now >= state.deadline ? "expired" : "open");
 
 /** The deadline a buy accepted at block time `at` would produce. */
 export const nextDeadline = (state: GameState, at: number) =>
