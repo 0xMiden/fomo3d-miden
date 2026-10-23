@@ -114,14 +114,22 @@ fn link_latest(root: &Path, dir: &Path) {
     }
 }
 
-/// Rejects parameters that freeze the price or overflow a `u32` add in `buy`.
+/// Longest round, extension or cap accepted: ten years. With a block time before 2084 the game's
+/// `deadline + extend` and `now + cap` additions then stay inside a `u32`.
+const MAX_SECONDS: u32 = 315_360_000;
+
+/// Rejects parameters that freeze the price or overflow a `u32` add in `buy`. The game checks
+/// `pot + price <= max_pot` after adding, and `price` can reach `max_pot + price_step`, so
+/// `max_pot` of at most a third of `u32::MAX` keeps that sum, and the price step, in range.
 fn validate_round_params(params: &RoundParams) -> Result<()> {
-    ensure!(params.round_seconds > 0, "FOMO3D_ROUND_SECONDS must be > 0");
-    ensure!(
-        params.extend_seconds > 0,
-        "FOMO3D_EXTEND_SECONDS must be > 0"
-    );
-    ensure!(params.cap_seconds > 0, "FOMO3D_CAP_SECONDS must be > 0");
+    for (name, seconds) in [
+        ("FOMO3D_ROUND_SECONDS", params.round_seconds),
+        ("FOMO3D_EXTEND_SECONDS", params.extend_seconds),
+        ("FOMO3D_CAP_SECONDS", params.cap_seconds),
+    ] {
+        ensure!(seconds > 0, "{name} must be > 0");
+        ensure!(seconds <= MAX_SECONDS, "{name} must be <= {MAX_SECONDS}");
+    }
     ensure!(params.start_price > 0, "FOMO3D_START_PRICE must be > 0");
     ensure!(params.price_step > 0, "FOMO3D_PRICE_STEP must be > 0");
     ensure!(
@@ -133,8 +141,8 @@ fn validate_round_params(params: &RoundParams) -> Result<()> {
         "FOMO3D_PRICE_STEP must be <= FOMO3D_MAX_POT"
     );
     ensure!(
-        params.max_pot <= u32::MAX / 2,
-        "FOMO3D_MAX_POT must be <= u32::MAX/2"
+        params.max_pot <= u32::MAX / 3,
+        "FOMO3D_MAX_POT must be <= u32::MAX/3"
     );
     Ok(())
 }
@@ -185,10 +193,20 @@ fn slot(name: &str, value: Word) -> Result<StorageSlot> {
     Ok(StorageSlot::with_value(StorageSlotName::new(name)?, value))
 }
 
+/// Longest a single proof of work may run. The loop is synchronous, so the step timeout around
+/// the faucet attempt cannot interrupt it; a target this hard is the faucet's mistake.
+const POW_LIMIT: Duration = Duration::from_secs(90);
+
 /// Solves the faucet proof of work: `u64_be(sha256(challenge || nonce_be)[0..8]) < target`.
 fn solve_pow(challenge: &[u8], target: u64) -> Result<u64> {
+    solve_pow_within(challenge, target, POW_LIMIT)
+}
+
+fn solve_pow_within(challenge: &[u8], target: u64, limit: Duration) -> Result<u64> {
     ensure!(target > 0, "faucet pow target must be > 0");
+    let started = Instant::now();
     let mut nonce: u64 = rand::random();
+    let mut tries: u32 = 0;
     loop {
         let mut hasher = Sha256::new();
         hasher.update(challenge);
@@ -199,6 +217,12 @@ fn solve_pow(challenge: &[u8], target: u64) -> Result<u64> {
             return Ok(nonce);
         }
         nonce = nonce.wrapping_add(1);
+        tries = tries.wrapping_add(1);
+        ensure!(
+            tries % (1 << 16) != 0 || started.elapsed() < limit,
+            "faucet pow target {target} not solved within {}s",
+            limit.as_secs_f32()
+        );
     }
 }
 
@@ -624,13 +648,29 @@ mod tests {
         );
         assert_eq!(
             refusal(RoundParams {
-                max_pot: u32::MAX / 2 + 1,
+                max_pot: u32::MAX / 3 + 1,
                 ..d()
             }),
-            "FOMO3D_MAX_POT must be <= u32::MAX/2"
+            "FOMO3D_MAX_POT must be <= u32::MAX/3"
         );
         assert!(validate_round_params(&RoundParams {
-            max_pot: u32::MAX / 2,
+            max_pot: u32::MAX / 3,
+            price_step: u32::MAX / 3,
+            start_price: u32::MAX / 3,
+            ..d()
+        })
+        .is_ok());
+        for (name, over) in [
+            ("FOMO3D_ROUND_SECONDS", RoundParams { round_seconds: MAX_SECONDS + 1, ..d() }),
+            ("FOMO3D_EXTEND_SECONDS", RoundParams { extend_seconds: MAX_SECONDS + 1, ..d() }),
+            ("FOMO3D_CAP_SECONDS", RoundParams { cap_seconds: MAX_SECONDS + 1, ..d() }),
+        ] {
+            assert_eq!(refusal(over), format!("{name} must be <= {MAX_SECONDS}"));
+        }
+        assert!(validate_round_params(&RoundParams {
+            round_seconds: MAX_SECONDS,
+            extend_seconds: MAX_SECONDS,
+            cap_seconds: MAX_SECONDS,
             ..d()
         })
         .is_ok());
@@ -648,6 +688,14 @@ mod tests {
         hasher.update(nonce.to_be_bytes());
         let digest = hasher.finalize();
         assert!(u64::from_be_bytes(digest[..8].try_into().unwrap()) < u64::MAX);
+    }
+
+    #[test]
+    fn a_pow_target_that_is_too_hard_gives_up_within_the_limit() {
+        let started = std::time::Instant::now();
+        let error = solve_pow_within(&[9], 1, Duration::from_millis(100)).unwrap_err();
+        assert!(error.to_string().contains("not solved within"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
