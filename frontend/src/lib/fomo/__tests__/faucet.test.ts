@@ -6,6 +6,7 @@ describe("readPowTarget", () => {
     expect(readPowTarget('{"challenge":"0x00","target":18446744073709551615,"timestamp":1}')).toBe(18446744073709551615n);
     expect(() => readPowTarget('{"challenge":"0x00"}')).toThrow(/target/);
     expect(() => readPowTarget('{"target":0}')).toThrow(/Invalid/);
+    expect(() => readPowTarget('{"target":18446744073709551616}')).toThrow(/Invalid/);
   });
 });
 
@@ -45,5 +46,29 @@ describe("requestFaucetTokens", () => {
     await expect(requestFaucetTokens("0x00", { baseUrl: "https://f", fetchImpl: failing, solve: async () => 1n })).rejects.toThrow(
       /HTTP 429 rate limited/,
     );
+  });
+
+  it("retries a 503 on the challenge fetch with a fresh challenge", async () => {
+    let pows = 0;
+    const flaky = vi.fn(async (input: string | URL | Request) => {
+      const path = new URL(String(input)).pathname.split("/").pop()!;
+      if (path === "pow" && ++pows === 1) return new Response("busy", { status: 503 });
+      return new Response(responses[path], { status: 200 });
+    }) as unknown as typeof fetch;
+    const solve = vi.fn(async () => 7n);
+    const grant = await requestFaucetTokens("0x00", { baseUrl: "https://f", fetchImpl: flaky, solve, retryDelayMs: 0 });
+    expect(pows).toBe(2);
+    expect(solve).toHaveBeenCalledTimes(1);
+    expect(grant.amount).toBe(100_000_000n);
+  });
+
+  it("gives up after the configured attempts on a persistent 503", async () => {
+    const busy = vi.fn(async (input: string | URL | Request) => {
+      const path = new URL(String(input)).pathname.split("/").pop()!;
+      return path === "pow" ? new Response("busy", { status: 503 }) : new Response(responses[path], { status: 200 });
+    }) as unknown as typeof fetch;
+    await expect(
+      requestFaucetTokens("0x00", { baseUrl: "https://f", fetchImpl: busy, solve: async () => 1n, attempts: 2, retryDelayMs: 0 }),
+    ).rejects.toThrow(/HTTP 503/);
   });
 });
