@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TransactionRequest } from "@miden-sdk/miden-sdk";
 import { customTransaction, explorer, parseAccountId, shortHex } from "@/lib/fomo/bread";
 import { buyWaitOutcome, forgetBuy, loadBuys, saveBuy, updateBuy, type BuyOutcome, type BuyRecord } from "@/lib/fomo/buys";
@@ -41,6 +41,15 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
   useEffect(() => {
     setBuys(gameHex && accountHex ? loadBuys(gameHex, accountHex) : []);
   }, [gameHex, accountHex]);
+
+  // The history on screen belongs to the active account; a buy in flight belongs to the account
+  // that sent it, which can differ after a switch in Bread.
+  const active = useRef({ gameHex, accountHex });
+  active.current = { gameHex, accountHex };
+  const changeBuys = useCallback((game: string, account: string, change: (held: BuyRecord[]) => BuyRecord[]) => {
+    if (active.current.gameHex === game && active.current.accountHex === account) setBuys(change);
+    else change(loadBuys(game, account));
+  }, []);
 
   const push = useCallback((text: string, kind: LogKind = "info", href?: string) => {
     setLog((entries) => [{ at: Date.now(), text, kind, href }, ...entries].slice(0, 60));
@@ -178,19 +187,19 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
           at: Date.now(),
         };
         // Persist before anything can fail: a wallet success with a lost id must not orphan the buy.
-        setBuys((held) => saveBuy(ctx.gameHex, ctx.accountHex, held, record));
+        changeBuys(ctx.gameHex, ctx.accountHex, (held) => saveBuy(ctx.gameHex, ctx.accountHex, held, record));
         const { keys: keysBefore, round: roundBefore } = ctx.state;
         let walletTxId: string;
         try {
           walletTxId = await requestThroughBread(ownOutputRequest(note));
         } catch (caught) {
           // Bread never started it, so there is no buy to show.
-          setBuys((held) => forgetBuy(ctx.gameHex, ctx.accountHex, held, record));
+          changeBuys(ctx.gameHex, ctx.accountHex, (held) => forgetBuy(ctx.gameHex, ctx.accountHex, held, record));
           throw caught;
         }
-        setBuys((held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { walletTxId }));
+        changeBuys(ctx.gameHex, ctx.accountHex, (held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { walletTxId }));
         const txHash = await awaitSubmission(walletTxId);
-        setBuys((held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { walletTxId, txHash }));
+        changeBuys(ctx.gameHex, ctx.accountHex, (held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { walletTxId, txHash }));
         push("Waiting for the game to consume the buy note...");
         const outcomeOf = (state: GameState) =>
           buyWaitOutcome(roundBefore, keysBefore, state.round, state.keys, holdsLeader(state, ctx.accountHex));
@@ -200,13 +209,13 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
         } catch {
           outcome = "unconfirmed";
         }
-        setBuys((held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { outcome }));
+        changeBuys(ctx.gameHex, ctx.accountHex, (held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { outcome }));
         if (outcome === "led") push("Your key was accepted. You lead the round.", "ok");
         else if (outcome === "ended") push("The round moved on before your buy was confirmed.");
         else push("Your buy was not confirmed. It is still pending or was refunded to your Bread account; check Bread.", "error");
         void refreshBalance();
       }),
-    [awaitSubmission, push, refreshBalance, requestThroughBread, requireContext, waitForChain, withBusy],
+    [awaitSubmission, changeBuys, push, refreshBalance, requestThroughBread, requireContext, waitForChain, withBusy],
   );
 
   const settle = useCallback(

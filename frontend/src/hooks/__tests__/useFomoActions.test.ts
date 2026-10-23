@@ -119,4 +119,49 @@ describe("useFomoActions buy", () => {
     expect(result.current.buys[0]).toMatchObject({ txHash: "0xtx", outcome: "unconfirmed" });
     expect(result.current.busy).toBeNull();
   });
+
+  it("keeps writing an in-flight buy to the account that sent it after the Bread account changes", async () => {
+    let approve!: (id: string) => void;
+    const request = vi.fn(() => new Promise<string>((resolve) => (approve = resolve)));
+    const refresh = vi.fn(async () => snapshot(state({ round: 5, keys: 0n })));
+    const { result, rerender } = renderHook(
+      ({ b }: { b: never }) => useFomoActions({ gameHex: GAME, snapshot: snapshot(state()), refresh, bread: b }),
+      { initialProps: { b: bread({ requestTransaction: request }) } },
+    );
+    let done!: Promise<unknown>;
+    await act(async () => {
+      done = result.current.buy(1_000_000n);
+    });
+    expect(loadBuys(GAME, ME)).toHaveLength(1);
+    rerender({ b: bread({ accountHex: "0xother", requestTransaction: request }) });
+    expect(result.current.buys).toEqual([]);
+    await act(async () => {
+      approve("w1");
+      await done;
+    });
+    const mine = loadBuys(GAME, ME);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ noteId: "0xnote", walletTxId: "w1", txHash: "0xtx", outcome: "ended" });
+    expect(loadBuys(GAME, "0xother")).toEqual([]);
+    expect(result.current.buys).toEqual([]);
+  });
+
+  it("drops a rejected in-flight buy from the sending account's history, not the active one's", async () => {
+    let reject!: (error: Error) => void;
+    const request = vi.fn(() => new Promise<string>((_, fail) => (reject = fail)));
+    const { result, rerender } = renderHook(
+      ({ b }: { b: never }) => useFomoActions({ gameHex: GAME, snapshot: snapshot(state()), refresh: vi.fn(async () => null), bread: b }),
+      { initialProps: { b: bread({ requestTransaction: request }) } },
+    );
+    let done!: Promise<unknown>;
+    await act(async () => {
+      done = result.current.buy(1_000_000n);
+    });
+    rerender({ b: bread({ accountHex: "0xother", requestTransaction: request }) });
+    await act(async () => {
+      reject(new Error("rejected"));
+      await done;
+    });
+    expect(loadBuys(GAME, ME)).toEqual([]);
+  });
 });
