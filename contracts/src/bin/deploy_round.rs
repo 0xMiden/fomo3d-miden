@@ -56,7 +56,7 @@ use miden_standards::{
         wallets::BasicWallet,
     },
     code_builder::CodeBuilder,
-    note::{config::NetworkAccountConfigNote, FeeSponsorshipNote, P2idNote},
+    note::{config::NetworkAccountConfigNote, FeeSponsorshipNote, P2idNote, P2ideNote},
     tx_script::{ExpirationTransactionScript, SendWalletNotesTransactionScript},
 };
 use sha2::{Digest, Sha256};
@@ -427,10 +427,13 @@ async fn main() -> Result<()> {
     )?;
     // Every allowlisted script needs a fee entry, including the three defaults the network
     // builder relies on (config, fee sponsorship, P2ID). All zero: the game pays its own fees.
+    // P2IDE is what a wallet's recallable send produces (Bread 1.17.5 on mainnet); without it
+    // the funding note fails "input note script root is not in the note script allowlist".
     let fees = [
         (buy.root(), 0u64.try_into()?),
         (settle.root(), 0u64.try_into()?),
         (P2idNote::script_root(), 0u64.try_into()?),
+        (P2ideNote::script_root(), 0u64.try_into()?),
         (FeeSponsorshipNote::script_root(), 0u64.try_into()?),
         (NetworkAccountConfigNote::script_root(), 0u64.try_into()?),
     ];
