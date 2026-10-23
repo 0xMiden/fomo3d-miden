@@ -22,7 +22,7 @@
 use std::{
     collections::BTreeSet,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -74,6 +74,22 @@ struct RoundParams {
     max_pot: u32,
 }
 
+impl RoundParams {
+    /// Reads the `FOMO3D_*` round parameters and refuses a combination the game cannot play.
+    fn from_env() -> Result<Self> {
+        let params = RoundParams {
+            round_seconds: env_u32("FOMO3D_ROUND_SECONDS", 3600)?,
+            extend_seconds: env_u32("FOMO3D_EXTEND_SECONDS", 60)?,
+            cap_seconds: env_u32("FOMO3D_CAP_SECONDS", 600)?,
+            start_price: env_u32("FOMO3D_START_PRICE", 1_000_000)?,
+            price_step: env_u32("FOMO3D_PRICE_STEP", 100_000)?,
+            max_pot: env_u32("FOMO3D_MAX_POT", 1_000_000_000)?,
+        };
+        validate_round_params(&params)?;
+        Ok(params)
+    }
+}
+
 fn env_u32(name: &str, default: u32) -> Result<u32> {
     match std::env::var(name) {
         Ok(value) => value
@@ -86,6 +102,41 @@ fn env_u32(name: &str, default: u32) -> Result<u32> {
 
 fn env_string(name: &str, default: impl Into<String>) -> String {
     std::env::var(name).unwrap_or_else(|_| default.into())
+}
+
+/// Points `<root>/latest` at the run directory. The target is the directory's own name: a symlink
+/// target resolves from the link's parent, so a relative `FOMO3D_DEPLOY_DIR` would be doubled.
+fn link_latest(root: &Path, dir: &Path) {
+    let latest = root.join("latest");
+    let _ = fs::remove_file(&latest);
+    if let Some(name) = dir.file_name() {
+        let _ = std::os::unix::fs::symlink(name, &latest);
+    }
+}
+
+/// Rejects parameters that freeze the price or overflow a `u32` add in `buy`.
+fn validate_round_params(params: &RoundParams) -> Result<()> {
+    ensure!(params.round_seconds > 0, "FOMO3D_ROUND_SECONDS must be > 0");
+    ensure!(
+        params.extend_seconds > 0,
+        "FOMO3D_EXTEND_SECONDS must be > 0"
+    );
+    ensure!(params.cap_seconds > 0, "FOMO3D_CAP_SECONDS must be > 0");
+    ensure!(params.start_price > 0, "FOMO3D_START_PRICE must be > 0");
+    ensure!(params.price_step > 0, "FOMO3D_PRICE_STEP must be > 0");
+    ensure!(
+        params.start_price <= params.max_pot,
+        "FOMO3D_START_PRICE must be <= FOMO3D_MAX_POT"
+    );
+    ensure!(
+        params.price_step <= params.max_pot,
+        "FOMO3D_PRICE_STEP must be <= FOMO3D_MAX_POT"
+    );
+    ensure!(
+        params.max_pot <= u32::MAX / 2,
+        "FOMO3D_MAX_POT must be <= u32::MAX/2"
+    );
+    Ok(())
 }
 
 /// Everything that differs between the public networks. `Endpoint::mainnet()` in client 0.17
@@ -135,7 +186,8 @@ fn slot(name: &str, value: Word) -> Result<StorageSlot> {
 }
 
 /// Solves the faucet proof of work: `u64_be(sha256(challenge || nonce_be)[0..8]) < target`.
-fn solve_pow(challenge: &[u8], target: u64) -> u64 {
+fn solve_pow(challenge: &[u8], target: u64) -> Result<u64> {
+    ensure!(target > 0, "faucet pow target must be > 0");
     let mut nonce: u64 = rand::random();
     loop {
         let mut hasher = Sha256::new();
@@ -144,7 +196,7 @@ fn solve_pow(challenge: &[u8], target: u64) -> u64 {
         let digest = hasher.finalize();
         let leading = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes"));
         if leading < target {
-            return nonce;
+            return Ok(nonce);
         }
         nonce = nonce.wrapping_add(1);
     }
@@ -186,7 +238,7 @@ async fn claim_faucet_once(base_url: &str, target: AccountId) -> Result<(NoteId,
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow!("faucet pow lacks target: {pow}"))?;
     let challenge = hex::decode(challenge_hex.trim_start_matches("0x"))?;
-    let nonce = solve_pow(&challenge, pow_target);
+    let nonce = solve_pow(&challenge, pow_target)?;
     let response = http
         .get(format!("{base}/get_tokens"))
         .query(&[
@@ -316,14 +368,7 @@ async fn wait_for_commit(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let params = RoundParams {
-        round_seconds: env_u32("FOMO3D_ROUND_SECONDS", 3600)?,
-        extend_seconds: env_u32("FOMO3D_EXTEND_SECONDS", 60)?,
-        cap_seconds: env_u32("FOMO3D_CAP_SECONDS", 600)?,
-        start_price: env_u32("FOMO3D_START_PRICE", 1_000_000)?,
-        price_step: env_u32("FOMO3D_PRICE_STEP", 100_000)?,
-        max_pot: env_u32("FOMO3D_MAX_POT", 1_000_000_000)?,
-    };
+    let params = RoundParams::from_env()?;
     let network = network_from_env()?;
     let root = std::env::var_os("FOMO3D_DEPLOY_DIR")
         .map(PathBuf::from)
@@ -481,9 +526,7 @@ async fn main() -> Result<()> {
     wait_for_commit(&mut client, tx_id).await?;
     println!("{} round initialized and committed", network.name);
 
-    let latest = root.join("latest");
-    let _ = fs::remove_file(&latest);
-    let _ = std::os::unix::fs::symlink(&dir, &latest);
+    link_latest(&root, &dir);
 
     let env = format!(
         "VITE_MIDEN_NETWORK={}\nVITE_MIDEN_RPC_URL={}\nVITE_MIDEN_PROVER={}\nVITE_MIDEN_EXPLORER_URL={}\nVITE_MIDEN_FAUCET_URL={}\nVITE_MIDEN_GAME_ADDRESS={game_hex}\n",
@@ -498,4 +541,138 @@ async fn main() -> Result<()> {
     println!("explorer: {}/account/{game_hex}", network.explorer);
     println!("the pot is paid to the last accepted buyer as a public P2ID note; the winning buy is public");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn defaults() -> RoundParams {
+        RoundParams {
+            round_seconds: 3600,
+            extend_seconds: 60,
+            cap_seconds: 600,
+            start_price: 1_000_000,
+            price_step: 100_000,
+            max_pot: 1_000_000_000,
+        }
+    }
+
+    fn refusal(params: RoundParams) -> String {
+        validate_round_params(&params).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn defaults_pass_including_a_first_window_longer_than_the_cap() {
+        assert!(validate_round_params(&defaults()).is_ok());
+    }
+
+    #[test]
+    fn parameters_the_game_cannot_play_are_refused_by_name() {
+        let d = defaults;
+        assert_eq!(
+            refusal(RoundParams {
+                price_step: 0,
+                ..d()
+            }),
+            "FOMO3D_PRICE_STEP must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                round_seconds: 0,
+                ..d()
+            }),
+            "FOMO3D_ROUND_SECONDS must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                extend_seconds: 0,
+                ..d()
+            }),
+            "FOMO3D_EXTEND_SECONDS must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                cap_seconds: 0,
+                ..d()
+            }),
+            "FOMO3D_CAP_SECONDS must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                start_price: 0,
+                ..d()
+            }),
+            "FOMO3D_START_PRICE must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                start_price: 2_000_000,
+                max_pot: 1_000_000,
+                ..d()
+            }),
+            "FOMO3D_START_PRICE must be <= FOMO3D_MAX_POT"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                price_step: 2_000_000,
+                max_pot: 1_000_000,
+                start_price: 1,
+                ..d()
+            }),
+            "FOMO3D_PRICE_STEP must be <= FOMO3D_MAX_POT"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                max_pot: u32::MAX / 2 + 1,
+                ..d()
+            }),
+            "FOMO3D_MAX_POT must be <= u32::MAX/2"
+        );
+        assert!(validate_round_params(&RoundParams {
+            max_pot: u32::MAX / 2,
+            ..d()
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn a_zero_pow_target_is_refused_instead_of_spinning() {
+        assert_eq!(
+            solve_pow(&[0], 0).unwrap_err().to_string(),
+            "faucet pow target must be > 0"
+        );
+        let nonce = solve_pow(&[1, 2, 3], u64::MAX).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update([1, 2, 3]);
+        hasher.update(nonce.to_be_bytes());
+        let digest = hasher.finalize();
+        assert!(u64::from_be_bytes(digest[..8].try_into().unwrap()) < u64::MAX);
+    }
+
+    #[test]
+    fn latest_links_to_the_run_directory_by_name_even_for_a_relative_root() {
+        let base = std::env::temp_dir().join(format!("fomo3d-latest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let run = base.join("target").join("123");
+        fs::create_dir_all(&run).unwrap();
+        fs::write(run.join("marker"), "ok").unwrap();
+        let root = base.join("target");
+        link_latest(&root, &run);
+        assert_eq!(
+            fs::read_link(root.join("latest")).unwrap(),
+            PathBuf::from("123")
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("latest").join("marker")).unwrap(),
+            "ok"
+        );
+        // Run again over an existing link, as a second deploy into the same root does.
+        link_latest(&root, &run);
+        assert_eq!(
+            fs::read_link(root.join("latest")).unwrap(),
+            PathBuf::from("123")
+        );
+        fs::remove_dir_all(&base).unwrap();
+    }
 }
