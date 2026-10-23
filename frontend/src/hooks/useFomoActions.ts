@@ -37,9 +37,10 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
   const [log, setLog] = useState<LogEntry[]>([]);
   const [balance, setBalance] = useState<bigint | null>(null);
 
+  const accountHex = bread.accountHex;
   useEffect(() => {
-    setBuys(gameHex ? loadBuys(gameHex) : []);
-  }, [gameHex]);
+    setBuys(gameHex && accountHex ? loadBuys(gameHex, accountHex) : []);
+  }, [gameHex, accountHex]);
 
   const push = useCallback((text: string, kind: LogKind = "info", href?: string) => {
     setLog((entries) => [{ at: Date.now(), text, kind, href }, ...entries].slice(0, 60));
@@ -161,10 +162,10 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
           at: Date.now(),
         };
         // Persist before anything can fail: a wallet success with a lost id must not orphan the buy.
-        setBuys(saveBuy(ctx.gameHex, record));
+        setBuys((held) => saveBuy(ctx.gameHex, ctx.accountHex, held, record));
         const { keys: keysBefore, round: roundBefore } = ctx.state;
         const { walletTxId, txHash } = await sendThroughBread(ownOutputRequest(note));
-        setBuys(updateBuy(ctx.gameHex, record, { walletTxId, txHash }));
+        setBuys((held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { walletTxId, txHash }));
         push("Waiting for the game to consume the buy note...");
         const next = await waitForChain(
           (state) => state.keys !== keysBefore || state.round !== roundBefore,

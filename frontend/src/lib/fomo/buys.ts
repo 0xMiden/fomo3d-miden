@@ -14,14 +14,21 @@ export type BuyRecord = {
   round: number;
   /** Unix ms. */
   at: number;
+  /** What the buy flow observed once it stopped waiting; absent while in flight or after a reload mid-flow. */
+  outcome?: BuyOutcome;
 };
+
+export type BuyOutcome = "led" | "ended" | "unconfirmed";
 
 export interface BuyStore {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
 }
 
-const storageKey = (game: string) => `fomo3d:buys:${game.toLowerCase()}`;
+/** Newest records kept per game and account. */
+export const MAX_BUYS = 50;
+
+const storageKey = (game: string, account: string) => `fomo3d:buys:${game.toLowerCase()}:${account.toLowerCase()}`;
 
 /** Identity of a record: the moment it was sent plus its note id. */
 export const buyKey = (record: Pick<BuyRecord, "at" | "noteId">) => `${record.at}:${record.noteId ?? ""}`;
@@ -34,39 +41,66 @@ const defaultStore = (): BuyStore | null => {
   }
 };
 
-export function loadBuys(game: string, store: BuyStore | null = defaultStore()): BuyRecord[] {
+const OUTCOMES: readonly string[] = ["led", "ended", "unconfirmed"];
+const isDecimal = (value: unknown) => typeof value === "string" && /^\d+$/.test(value);
+const isOptionalString = (value: unknown) => value === undefined || typeof value === "string";
+
+/** Stored JSON is untrusted: another version or a hand edit can leave anything in the array. */
+function isBuyRecord(value: unknown): value is BuyRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const r = value as Record<string, unknown>;
+  return (
+    isDecimal(r.maxSpend) &&
+    isDecimal(r.priceAtBuy) &&
+    Number.isFinite(r.round) &&
+    Number.isFinite(r.at) &&
+    isOptionalString(r.noteId) &&
+    isOptionalString(r.walletTxId) &&
+    isOptionalString(r.txHash) &&
+    (r.outcome === undefined || OUTCOMES.includes(r.outcome as string))
+  );
+}
+
+export function loadBuys(game: string, account: string, store: BuyStore | null = defaultStore()): BuyRecord[] {
   try {
-    const raw = store?.getItem(storageKey(game));
+    const raw = store?.getItem(storageKey(game, account));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as BuyRecord[]) : [];
+    return Array.isArray(parsed) ? parsed.filter(isBuyRecord).slice(0, MAX_BUYS) : [];
   } catch {
     return [];
   }
 }
 
-function writeBuys(game: string, buys: BuyRecord[], store: BuyStore | null) {
+/** Persists `buys` and returns it capped; the caller's list stays the truth when storage fails. */
+function writeBuys(game: string, account: string, buys: BuyRecord[], store: BuyStore | null): BuyRecord[] {
+  const kept = buys.slice(0, MAX_BUYS);
   try {
-    store?.setItem(storageKey(game), JSON.stringify(buys));
+    store?.setItem(storageKey(game, account), JSON.stringify(kept));
   } catch {
     // Private windows and blocked storage: the list is then only as long as this page's life.
   }
+  return kept;
 }
 
-/** Persists a buy BEFORE the wallet is asked to send it, newest first. */
-export function saveBuy(game: string, record: BuyRecord, store: BuyStore | null = defaultStore()): BuyRecord[] {
-  const buys = [record, ...loadBuys(game, store).filter((b) => buyKey(b) !== buyKey(record))];
-  writeBuys(game, buys, store);
-  return buys;
+/** Persists a buy BEFORE the wallet is asked to send it, newest first. `current` is the list the page holds. */
+export function saveBuy(
+  game: string,
+  account: string,
+  current: BuyRecord[],
+  record: BuyRecord,
+  store: BuyStore | null = defaultStore(),
+): BuyRecord[] {
+  return writeBuys(game, account, [record, ...current.filter((b) => buyKey(b) !== buyKey(record))], store);
 }
 
 export function updateBuy(
   game: string,
+  account: string,
+  current: BuyRecord[],
   key: Pick<BuyRecord, "at" | "noteId">,
   patch: Partial<BuyRecord>,
   store: BuyStore | null = defaultStore(),
 ): BuyRecord[] {
-  const buys = loadBuys(game, store).map((b) => (buyKey(b) === buyKey(key) ? { ...b, ...patch } : b));
-  writeBuys(game, buys, store);
-  return buys;
+  return writeBuys(game, account, current.map((b) => (buyKey(b) === buyKey(key) ? { ...b, ...patch } : b)), store);
 }
