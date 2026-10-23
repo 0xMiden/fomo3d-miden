@@ -18,6 +18,7 @@ vi.mock("@/lib/fomo/game", () => ({
   roundPhase: () => "open",
 }));
 
+import { loadBuys } from "@/lib/fomo/buys";
 import type { GameState } from "@/lib/fomo/types";
 import { useFomoActions } from "../useFomoActions";
 
@@ -63,6 +64,23 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("useFomoActions buy", () => {
+  it("forgets the pre-saved record when Bread rejects the request", async () => {
+    const { result } = setup(bread({ requestTransaction: vi.fn(async () => Promise.reject(new Error("rejected"))) }));
+    await act(async () => void (await result.current.buy(1_000_000n)));
+    expect(result.current.buys).toEqual([]);
+    expect(loadBuys(GAME, ME)).toEqual([]);
+    expect(result.current.log[0]).toMatchObject({ kind: "error", text: "rejected" });
+  });
+
+  it("keeps the record, with its wallet id, when only the wait for submission fails", async () => {
+    const { result } = setup(bread({ waitForTransaction: vi.fn(async () => Promise.reject(new Error("timed out"))) }));
+    await act(async () => void (await result.current.buy(1_000_000n)));
+    expect(result.current.buys).toHaveLength(1);
+    expect(result.current.buys[0]).toMatchObject({ noteId: "0xnote", walletTxId: "w1" });
+    expect(result.current.buys[0].outcome).toBeUndefined();
+    expect(loadBuys(GAME, ME)).toHaveLength(1);
+  });
+
   it("refuses a spend that does not fit in a u32 before building the note", async () => {
     const { result } = setup(bread(), vi.fn(async () => snapshot(state({ round: 5, keys: 0n }))));
     await act(async () => void (await result.current.buy(4_294_967_296n)));
@@ -72,5 +90,33 @@ describe("useFomoActions buy", () => {
     expect(result.current.log[0].text).toMatch(/u32/);
     await act(async () => void (await result.current.buy(4_294_967_295n)));
     expect(sdk.buildNetworkNote).toHaveBeenCalledTimes(1);
+  });
+
+  it("records led when this account leads after a key was accepted", async () => {
+    const refresh = vi.fn(async () => snapshot(state({ keys: 3n, leader: ME as never })));
+    const { result } = setup(bread(), refresh);
+    await act(async () => void (await result.current.buy(1_000_000n)));
+    expect(result.current.buys[0]).toMatchObject({ txHash: "0xtx", outcome: "led" });
+    expect(loadBuys(GAME, ME)[0].outcome).toBe("led");
+  });
+
+  it("records ended when the round moved on", async () => {
+    const refresh = vi.fn(async () => snapshot(state({ round: 5, keys: 0n })));
+    const { result } = setup(bread(), refresh);
+    await act(async () => void (await result.current.buy(1_000_000n)));
+    expect(result.current.buys[0].outcome).toBe("ended");
+  });
+
+  it("does not take another player's key for its own outcome, and ends unconfirmed", async () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn(async () => snapshot(state({ keys: 3n, leader: "0xother" as never })));
+    const { result } = setup(bread(), refresh);
+    await act(async () => {
+      const done = result.current.buy(1_000_000n);
+      await vi.advanceTimersByTimeAsync(200_000);
+      await done;
+    });
+    expect(result.current.buys[0]).toMatchObject({ txHash: "0xtx", outcome: "unconfirmed" });
+    expect(result.current.busy).toBeNull();
   });
 });

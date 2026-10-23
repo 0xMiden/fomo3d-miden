@@ -104,3 +104,28 @@ export function updateBuy(
 ): BuyRecord[] {
   return writeBuys(game, account, current.map((b) => (buyKey(b) === buyKey(key) ? { ...b, ...patch } : b)), store);
 }
+
+/** Drops one record, e.g. a buy Bread refused to send. */
+export function forgetBuy(
+  game: string,
+  account: string,
+  current: BuyRecord[],
+  key: Pick<BuyRecord, "at" | "noteId">,
+  store: BuyStore | null = defaultStore(),
+): BuyRecord[] {
+  return writeBuys(game, account, current.filter((b) => buyKey(b) !== buyKey(key)), store);
+}
+
+/**
+ * The outcome of a buy from the game state read after Bread submitted it, or null while it
+ * cannot be told. Another player's accepted key moves the shared state too, so a changed key
+ * count counts only when this account is the leader; a refund changes nothing, so it never
+ * resolves here.
+ */
+export const buyWaitOutcome = (
+  roundBefore: number,
+  keysBefore: bigint,
+  round: number,
+  keys: bigint,
+  leading: boolean,
+): BuyOutcome | null => (round > roundBefore ? "ended" : keys > keysBefore && leading ? "led" : null);

@@ -155,12 +155,28 @@ describe("PlayPanel", () => {
       ],
     });
     const { rerender } = render(<PlayPanel state={{ ...state, leader: ME_LEADER }} now={1} bread={bread()} actions={a} />);
-    const labels = () => screen.getAllByText(/^(PENDING|LEADING|OUTBID|ENDED)$/).map((el) => el.textContent);
+    const labels = () => screen.getAllByText(/^(PENDING|LEADING|OUTBID|ENDED|UNCONFIRMED)$/).map((el) => el.textContent);
     expect(labels()).toEqual(["PENDING", "PENDING", "LEADING", "ENDED"]);
     expect(screen.getAllByRole("link", { name: "TX ↗" })).toHaveLength(3);
     rerender(<PlayPanel state={state} now={1} bread={bread()} actions={a} />);
     expect(labels()).toEqual(["PENDING", "PENDING", "OUTBID", "ENDED"]);
     expect(screen.queryByRole("button", { name: /CLAIM|REFUND/ })).toBeNull();
+  });
+
+  it("labels a buy by the outcome its flow observed, not by the live price or leader", () => {
+    const a = actions({
+      buys: [
+        buy({ at: 4, noteId: "0xunconf", priceAtBuy: "1200000", outcome: "unconfirmed" }),
+        buy({ at: 3, noteId: "0xled", priceAtBuy: "1200000", outcome: "led" }),
+        buy({ at: 2, noteId: "0xended", priceAtBuy: "1000000", outcome: "ended" }),
+        buy({ at: 1, noteId: "0xled-old", round: 3, outcome: "led" }),
+      ],
+    });
+    const labels = () => screen.getAllByText(/^(PENDING|LEADING|OUTBID|ENDED|UNCONFIRMED)$/).map((el) => el.textContent);
+    const { rerender } = render(<PlayPanel state={{ ...state, leader: ME_LEADER }} now={1} bread={bread()} actions={a} />);
+    expect(labels()).toEqual(["UNCONFIRMED", "LEADING", "ENDED", "ENDED"]);
+    rerender(<PlayPanel state={state} now={1} bread={bread()} actions={a} />);
+    expect(labels()).toEqual(["UNCONFIRMED", "OUTBID", "ENDED", "ENDED"]);
   });
 
   it("renders the activity log with explorer links", () => {

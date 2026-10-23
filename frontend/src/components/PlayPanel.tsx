@@ -14,16 +14,19 @@ export interface PlayPanelProps {
   actions: FomoActions;
 }
 
-type BuyStatus = { label: "PENDING" | "LEADING" | "OUTBID" | "ENDED"; tone: "lead" | "idle" | "lost" };
+type BuyStatus = { label: "PENDING" | "LEADING" | "OUTBID" | "ENDED" | "UNCONFIRMED"; tone: "lead" | "idle" | "lost" };
 
 /**
- * The price rises by one step per accepted key, so a price still equal to the one shown at buy
- * time means no key (mine or anyone's) was accepted since: the note is still pending.
+ * A buy's label comes from the outcome its flow observed. Only a record without one (the page was
+ * reloaded mid-flow) falls back to the live round: the price rises by one step per accepted key, so
+ * a price still equal to the one shown at buy time means no key was accepted since.
  */
 function buyStatus(record: BuyRecord, state: GameState | null, accountHex: string | null): BuyStatus {
+  if (record.outcome === "unconfirmed") return { label: "UNCONFIRMED", tone: "idle" };
+  if (record.outcome === "ended") return { label: "ENDED", tone: "idle" };
   if (!record.txHash || !state) return { label: "PENDING", tone: "idle" };
   if (record.round < state.round) return { label: "ENDED", tone: "idle" };
-  if (BigInt(record.priceAtBuy) === state.price) return { label: "PENDING", tone: "idle" };
+  if (record.outcome !== "led" && BigInt(record.priceAtBuy) === state.price) return { label: "PENDING", tone: "idle" };
   if (holdsLeader(state, accountHex)) return { label: "LEADING", tone: "lead" };
   return { label: "OUTBID", tone: "lost" };
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { TransactionRequest } from "@miden-sdk/miden-sdk";
 import { customTransaction, explorer, parseAccountId, shortHex } from "@/lib/fomo/bread";
-import { loadBuys, saveBuy, updateBuy, type BuyRecord } from "@/lib/fomo/buys";
+import { buyWaitOutcome, forgetBuy, loadBuys, saveBuy, updateBuy, type BuyOutcome, type BuyRecord } from "@/lib/fomo/buys";
 import { requestFaucetTokens } from "@/lib/fomo/faucet";
 import { holdsLeader, roundPhase } from "@/lib/fomo/game";
 import { buildNetworkNote } from "@/lib/fomo/notes";
@@ -78,19 +78,35 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
     [busy, push],
   );
 
-  /** Sends a request through Bread and waits until the wallet reports it submitted. */
-  const sendThroughBread = useCallback(
+  /** Asks Bread to approve and start a request; resolves with the wallet's transaction id. */
+  const requestThroughBread = useCallback(
     async (request: TransactionRequest) => {
       const ctx = requireContext();
       const tx = customTransaction(ctx.address, ctx.gameHex, request);
       push("Waiting for approval in Bread...");
-      const walletTxId = await ctx.requestTransaction(tx);
+      return ctx.requestTransaction(tx);
+    },
+    [push, requireContext],
+  );
+
+  /** Waits until the wallet reports a started transaction submitted. */
+  const awaitSubmission = useCallback(
+    async (walletTxId: string) => {
+      const ctx = requireContext();
       push("Bread accepted the transaction. Proving and submitting...");
       const output = await ctx.waitForTransaction(walletTxId, WALLET_WAIT_MS);
       push(`Submitted transaction ${shortHex(output.txHash)}`, "ok", explorer.tx(output.txHash));
-      return { walletTxId, txHash: output.txHash };
+      return output.txHash;
     },
     [push, requireContext],
+  );
+
+  const sendThroughBread = useCallback(
+    async (request: TransactionRequest) => {
+      const walletTxId = await requestThroughBread(request);
+      return { walletTxId, txHash: await awaitSubmission(walletTxId) };
+    },
+    [awaitSubmission, requestThroughBread],
   );
 
   /** Polls the game until `predicate` holds. */
@@ -164,21 +180,33 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
         // Persist before anything can fail: a wallet success with a lost id must not orphan the buy.
         setBuys((held) => saveBuy(ctx.gameHex, ctx.accountHex, held, record));
         const { keys: keysBefore, round: roundBefore } = ctx.state;
-        const { walletTxId, txHash } = await sendThroughBread(ownOutputRequest(note));
+        let walletTxId: string;
+        try {
+          walletTxId = await requestThroughBread(ownOutputRequest(note));
+        } catch (caught) {
+          // Bread never started it, so there is no buy to show.
+          setBuys((held) => forgetBuy(ctx.gameHex, ctx.accountHex, held, record));
+          throw caught;
+        }
+        setBuys((held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { walletTxId }));
+        const txHash = await awaitSubmission(walletTxId);
         setBuys((held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { walletTxId, txHash }));
         push("Waiting for the game to consume the buy note...");
-        const next = await waitForChain(
-          (state) => state.keys !== keysBefore || state.round !== roundBefore,
-          "Key acceptance",
-        );
-        if (next.round === roundBefore && holdsLeader(next, ctx.accountHex)) {
-          push("Your key was accepted. You lead the round.", "ok");
-        } else {
-          push("Your buy was refunded to your Bread account.", "error");
+        const outcomeOf = (state: GameState) =>
+          buyWaitOutcome(roundBefore, keysBefore, state.round, state.keys, holdsLeader(state, ctx.accountHex));
+        let outcome: BuyOutcome;
+        try {
+          outcome = outcomeOf(await waitForChain((state) => outcomeOf(state) !== null, "Key acceptance"))!;
+        } catch {
+          outcome = "unconfirmed";
         }
+        setBuys((held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { outcome }));
+        if (outcome === "led") push("Your key was accepted. You lead the round.", "ok");
+        else if (outcome === "ended") push("The round moved on before your buy was confirmed.");
+        else push("Your buy was not confirmed. It is still pending or was refunded to your Bread account; check Bread.", "error");
         void refreshBalance();
       }),
-    [push, refreshBalance, requireContext, sendThroughBread, waitForChain, withBusy],
+    [awaitSubmission, push, refreshBalance, requestThroughBread, requireContext, waitForChain, withBusy],
   );
 
   const settle = useCallback(

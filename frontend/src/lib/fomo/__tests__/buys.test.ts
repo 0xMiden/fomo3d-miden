@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buyKey, loadBuys, saveBuy, updateBuy, type BuyRecord, type BuyStore } from "../buys";
+import { buyKey, buyWaitOutcome, forgetBuy, loadBuys, saveBuy, updateBuy, type BuyRecord, type BuyStore } from "../buys";
 
 const memoryStore = (): BuyStore & { map: Map<string, string> } => {
   const map = new Map<string, string>();
@@ -89,5 +89,23 @@ describe("buy records store", () => {
     expect(list[49].at).toBe(2);
     store.map.set("fomo3d:buys:g:0xab01", JSON.stringify(Array.from({ length: 60 }, (_, i) => record(100 - i, `0x${i}`))));
     expect(loadBuys("g", ME, store)).toHaveLength(50);
+  });
+
+  it("forgets one record and leaves the others", () => {
+    const store = memoryStore();
+    let list = saveBuy("g", ME, [], record(1, "0xa"), store);
+    list = saveBuy("g", ME, list, record(2, "0xb"), store);
+    list = forgetBuy("g", ME, list, { at: 2, noteId: "0xb" }, store);
+    expect(list.map((b) => b.noteId)).toEqual(["0xa"]);
+    expect(loadBuys("g", ME, store).map((b) => b.noteId)).toEqual(["0xa"]);
+  });
+});
+
+describe("buyWaitOutcome", () => {
+  it("is decided only by this account leading or the round moving on", () => {
+    expect(buyWaitOutcome(4, 2n, 4, 3n, true)).toBe("led");
+    expect(buyWaitOutcome(4, 2n, 4, 3n, false)).toBeNull();
+    expect(buyWaitOutcome(4, 2n, 4, 2n, true)).toBeNull();
+    expect(buyWaitOutcome(4, 2n, 5, 0n, false)).toBe("ended");
   });
 });
