@@ -25,6 +25,11 @@ export type GameState = {
 
 export const USDCX_DECIMALS = 6;
 
+/** The game runs its buy arithmetic on u32 values and panics, rather than refunds, above this. */
+export const MAX_NOTE_AMOUNT = 4_294_967_295n;
+
+export const noteAmountFits = (amount: bigint) => amount >= 0n && amount <= MAX_NOTE_AMOUNT;
+
 export const formatUsdc = (units: bigint, digits = 2) => {
   const sign = units < 0n ? "-" : "";
   const abs = units < 0n ? -units : units;

@@ -41,11 +41,14 @@ export function decodeGameStorage(storage: { getItem(name: string): Word | undef
   };
 }
 
-/** Imports the public game account on first use, syncs, and decodes its storage. */
-export async function readGameState(client: GameReader, gameId: AccountId): Promise<GameState> {
-  if (!(await client.getAccount(gameId))) await client.importAccountById(gameId);
+/**
+ * Imports the public game account on first use, syncs, and decodes its storage. The SDK consumes
+ * an `AccountId` passed by value, so each call gets a fresh one minted from `gameHex`.
+ */
+export async function readGameState(client: GameReader, gameHex: string): Promise<GameState> {
+  if (!(await client.getAccount(AccountId.fromHex(gameHex)))) await client.importAccountById(AccountId.fromHex(gameHex));
   await client.syncState();
-  const account = await client.getAccount(gameId);
+  const account = await client.getAccount(AccountId.fromHex(gameHex));
   if (!account) throw new Error("Game account is not available on this network.");
   return decodeGameStorage(account.storage());
 }
@@ -63,7 +66,7 @@ export const holdsLeader = (state: GameState, accountHex: string | null | undefi
 export type RoundPhase = "open" | "expired";
 
 /** `now` is wall clock seconds; block timestamps lag it slightly, so "expired" may flip a little late on chain. */
-export const roundPhase = (state: GameState, now: number): RoundPhase => (now > state.deadline ? "expired" : "open");
+export const roundPhase = (state: GameState, now: number): RoundPhase => (now >= state.deadline ? "expired" : "open");
 
 /** The deadline a buy accepted at block time `at` would produce. */
 export const nextDeadline = (state: GameState, at: number) =>

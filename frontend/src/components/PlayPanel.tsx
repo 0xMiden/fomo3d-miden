@@ -5,7 +5,7 @@ import type { FomoActions } from "@/hooks/useFomoActions";
 import { explorer, shortHex } from "@/lib/fomo/bread";
 import type { BuyRecord } from "@/lib/fomo/buys";
 import { holdsLeader, roundPhase } from "@/lib/fomo/game";
-import { formatUsdc, parseUsdc, type GameState } from "@/lib/fomo/types";
+import { formatUsdc, noteAmountFits, parseUsdc, type GameState } from "@/lib/fomo/types";
 
 export interface PlayPanelProps {
   state: GameState | null;
@@ -14,16 +14,20 @@ export interface PlayPanelProps {
   actions: FomoActions;
 }
 
-type BuyStatus = { label: "PENDING" | "LEADING" | "OUTBID" | "ENDED"; tone: "lead" | "idle" | "lost" };
+type BuyStatus = { label: "PENDING" | "LEADING" | "OUTBID" | "ENDED" | "UNCONFIRMED"; tone: "lead" | "idle" | "lost" };
 
 /**
- * The price rises by one step per accepted key, so a price still equal to the one shown at buy
- * time means no key (mine or anyone's) was accepted since: the note is still pending.
+ * A buy's label comes from the outcome its flow observed. A record without one (the page was
+ * reloaded mid-flow) is PENDING: the live price and leader say nothing about this note, because
+ * any other player's key moves them too.
  */
 function buyStatus(record: BuyRecord, state: GameState | null, accountHex: string | null): BuyStatus {
-  if (!record.txHash || !state) return { label: "PENDING", tone: "idle" };
-  if (record.round < state.round) return { label: "ENDED", tone: "idle" };
-  if (BigInt(record.priceAtBuy) === state.price) return { label: "PENDING", tone: "idle" };
+  if (record.outcome === "unconfirmed") return { label: "UNCONFIRMED", tone: "idle" };
+  if (record.outcome === "ended") return { label: "ENDED", tone: "idle" };
+  // Without a hash the wallet may never have sent it, so a newer round says nothing about it.
+  if (!record.txHash && !record.outcome) return { label: "PENDING", tone: "idle" };
+  if (state && record.round < state.round) return { label: "ENDED", tone: "idle" };
+  if (record.outcome !== "led" || !state) return { label: "PENDING", tone: "idle" };
   if (holdsLeader(state, accountHex)) return { label: "LEADING", tone: "lead" };
   return { label: "OUTBID", tone: "lost" };
 }
@@ -36,7 +40,7 @@ export function PlayPanel({ state, now, bread, actions }: PlayPanelProps) {
     if (!touched && state) setSpendText(formatUsdc(state.price, 6).replace(/0+$/, "").replace(/\.$/, ""));
   }, [state, touched]);
   const spend = parseUsdc(spendText);
-  const spendValid = spend !== null && !!state && spend >= state.price;
+  const spendValid = spend !== null && !!state && spend >= state.price && noteAmountFits(spend);
   const connected = bread.connected;
   const busy = actions.busy;
   const canBuy = connected && !busy && !!state && phase === "open" && spendValid;
@@ -44,9 +48,9 @@ export function PlayPanel({ state, now, bread, actions }: PlayPanelProps) {
 
   useEffect(() => {
     if (connected) void actions.refreshBalance();
-    // Only re-read when the connection changes or the chain moved (a key, a refund or a payout).
+    // Only re-read when the connection or the account changes, or the chain moved (a key, a refund or a payout).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, state?.keys, state?.round]);
+  }, [connected, bread.accountHex, state?.keys, state?.round]);
 
   return (
     <div className="play-stack">

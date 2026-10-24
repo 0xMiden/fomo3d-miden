@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TransactionRequest } from "@miden-sdk/miden-sdk";
 import { customTransaction, explorer, parseAccountId, shortHex } from "@/lib/fomo/bread";
-import { loadBuys, saveBuy, updateBuy, type BuyRecord } from "@/lib/fomo/buys";
+import { buyWaitOutcome, forgetBuy, loadBuys, saveBuy, updateBuy, type BuyOutcome, type BuyRecord } from "@/lib/fomo/buys";
 import { requestFaucetTokens } from "@/lib/fomo/faucet";
 import { holdsLeader, roundPhase } from "@/lib/fomo/game";
 import { buildNetworkNote } from "@/lib/fomo/notes";
 import { ownOutputRequest } from "@/lib/fomo/requests";
 import { loadScript } from "@/lib/fomo/scripts";
-import { formatUsdc, type GameState } from "@/lib/fomo/types";
+import { formatUsdc, noteAmountFits, type GameState } from "@/lib/fomo/types";
 import type { Bread } from "./useBread";
 import type { GameSnapshot } from "./useGameState";
 
@@ -37,9 +37,32 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
   const [log, setLog] = useState<LogEntry[]>([]);
   const [balance, setBalance] = useState<bigint | null>(null);
 
+  const accountHex = bread.accountHex;
+  // The history on screen belongs to the active account; a buy in flight belongs to the account
+  // that sent it, which can differ after a switch in Bread. `held` mirrors the active list so a
+  // change is persisted when it is made, not when React gets round to an updater (or never does,
+  // after an unmount).
+  const held = useRef<{ key: string; list: BuyRecord[] }>({ key: "", list: [] });
+  const active = useRef({ gameHex, accountHex });
+  active.current = { gameHex, accountHex };
+  const historyKey = (game: string | undefined, account: string | null) => (game && account ? `${game}:${account}` : "");
   useEffect(() => {
-    setBuys(gameHex ? loadBuys(gameHex) : []);
-  }, [gameHex]);
+    held.current = { key: historyKey(gameHex, accountHex), list: gameHex && accountHex ? loadBuys(gameHex, accountHex) : [] };
+    setBuys(held.current.list);
+    setBalance(null);
+  }, [gameHex, accountHex]);
+  const changeBuys = useCallback((game: string, account: string, change: (current: BuyRecord[]) => BuyRecord[]) => {
+    const key = historyKey(game, account);
+    if (historyKey(active.current.gameHex, active.current.accountHex) !== key) {
+      change(loadBuys(game, account));
+      return;
+    }
+    // After a switch away and back the mirror can still hold the other account's list until the
+    // effect reloads it, so only a mirror keyed to this account is trusted.
+    const base = held.current.key === key ? held.current.list : loadBuys(game, account);
+    held.current = { key, list: change(base) };
+    setBuys(held.current.list);
+  }, []);
 
   const push = useCallback((text: string, kind: LogKind = "info", href?: string) => {
     setLog((entries) => [{ at: Date.now(), text, kind, href }, ...entries].slice(0, 60));
@@ -77,19 +100,35 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
     [busy, push],
   );
 
-  /** Sends a request through Bread and waits until the wallet reports it submitted. */
-  const sendThroughBread = useCallback(
+  /** Asks Bread to approve and start a request; resolves with the wallet's transaction id. */
+  const requestThroughBread = useCallback(
     async (request: TransactionRequest) => {
       const ctx = requireContext();
       const tx = customTransaction(ctx.address, ctx.gameHex, request);
       push("Waiting for approval in Bread...");
-      const walletTxId = await ctx.requestTransaction(tx);
+      return ctx.requestTransaction(tx);
+    },
+    [push, requireContext],
+  );
+
+  /** Waits until the wallet reports a started transaction submitted. */
+  const awaitSubmission = useCallback(
+    async (walletTxId: string) => {
+      const ctx = requireContext();
       push("Bread accepted the transaction. Proving and submitting...");
       const output = await ctx.waitForTransaction(walletTxId, WALLET_WAIT_MS);
       push(`Submitted transaction ${shortHex(output.txHash)}`, "ok", explorer.tx(output.txHash));
-      return { walletTxId, txHash: output.txHash };
+      return output.txHash;
     },
     [push, requireContext],
+  );
+
+  const sendThroughBread = useCallback(
+    async (request: TransactionRequest) => {
+      const walletTxId = await requestThroughBread(request);
+      return { walletTxId, txHash: await awaitSubmission(walletTxId) };
+    },
+    [awaitSubmission, requestThroughBread],
   );
 
   /** Polls the game until `predicate` holds. */
@@ -106,10 +145,16 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
     [refresh],
   );
 
+  const balanceRead = useRef(0);
   const refreshBalance = useCallback(async () => {
     if (!bread.connected || !bread.requestAssets || !snapshot) return;
+    // Only the newest read for the account on screen may write: reads finish in any order, and
+    // one started before a Bread account switch must not show the old account's funds.
+    const read = ++balanceRead.current;
+    const stale = () => read !== balanceRead.current || active.current.accountHex !== bread.accountHex;
     try {
       const assets = await bread.requestAssets();
+      if (stale()) return;
       const match = assets.find((asset) => {
         try {
           return parseAccountId(asset.faucetId).toString() === snapshot.feeFaucet;
@@ -119,22 +164,23 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
       });
       setBalance(match ? BigInt(match.amount) : 0n);
     } catch (caught) {
-      push(`Could not read the wallet balance: ${caught instanceof Error ? caught.message : String(caught)}`, "error");
+      if (!stale()) push(`Could not read the wallet balance: ${caught instanceof Error ? caught.message : String(caught)}`, "error");
     }
   }, [bread, push, snapshot]);
 
   const faucet = useCallback(
     () =>
       withBusy("faucet", async () => {
-        const ctx = requireContext();
-        const grant = await requestFaucetTokens(ctx.accountHex, { onStatus: (text) => push(text) });
+        // The grant needs only the account, so it works before the game state has loaded.
+        if (!bread.connected || !bread.accountHex) throw new Error("Connect the Bread wallet first.");
+        const grant = await requestFaucetTokens(bread.accountHex, { onStatus: (text) => push(text) });
         push(
           `Faucet note ${shortHex(grant.noteId)} created for ${formatUsdc(grant.amount, 0)} USDCx. Bread claims it automatically once its sync sees it.`,
           "ok",
           explorer.note(grant.noteId),
         );
       }),
-    [push, requireContext, withBusy],
+    [bread, push, withBusy],
   );
 
   const buy = useCallback(
@@ -143,6 +189,7 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
         const ctx = requireContext();
         if (roundPhase(ctx.state, nowSeconds()) === "expired") throw new Error("Time is up. Settle the round before buying.");
         if (maxSpend < ctx.state.price) throw new Error("Maximum spend is below the current key price.");
+        if (!noteAmountFits(maxSpend)) throw new Error("Maximum spend does not fit in a u32.");
         // The buy note carries no storage: the game reads the sender from the note metadata and
         // refunds change, outbid and late buys as public P2ID notes to that account.
         const note = buildNetworkNote({
@@ -160,23 +207,35 @@ export function useFomoActions({ gameHex, snapshot, refresh, bread }: FomoAction
           at: Date.now(),
         };
         // Persist before anything can fail: a wallet success with a lost id must not orphan the buy.
-        setBuys(saveBuy(ctx.gameHex, record));
+        changeBuys(ctx.gameHex, ctx.accountHex, (held) => saveBuy(ctx.gameHex, ctx.accountHex, held, record));
         const { keys: keysBefore, round: roundBefore } = ctx.state;
-        const { walletTxId, txHash } = await sendThroughBread(ownOutputRequest(note));
-        setBuys(updateBuy(ctx.gameHex, record, { walletTxId, txHash }));
-        push("Waiting for the game to consume the buy note...");
-        const next = await waitForChain(
-          (state) => state.keys !== keysBefore || state.round !== roundBefore,
-          "Key acceptance",
-        );
-        if (next.round === roundBefore && holdsLeader(next, ctx.accountHex)) {
-          push("Your key was accepted. You lead the round.", "ok");
-        } else {
-          push("Your buy was refunded to your Bread account.", "error");
+        let walletTxId: string;
+        try {
+          walletTxId = await requestThroughBread(ownOutputRequest(note));
+        } catch (caught) {
+          // Bread never started it, so there is no buy to show.
+          changeBuys(ctx.gameHex, ctx.accountHex, (held) => forgetBuy(ctx.gameHex, ctx.accountHex, held, record));
+          throw caught;
         }
+        changeBuys(ctx.gameHex, ctx.accountHex, (held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { walletTxId }));
+        const txHash = await awaitSubmission(walletTxId);
+        changeBuys(ctx.gameHex, ctx.accountHex, (held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { walletTxId, txHash }));
+        push("Waiting for the game to consume the buy note...");
+        const outcomeOf = (state: GameState) =>
+          buyWaitOutcome(roundBefore, keysBefore, state.round, state.keys, holdsLeader(state, ctx.accountHex));
+        let outcome: BuyOutcome;
+        try {
+          outcome = outcomeOf(await waitForChain((state) => outcomeOf(state) !== null, "Key acceptance"))!;
+        } catch {
+          outcome = "unconfirmed";
+        }
+        changeBuys(ctx.gameHex, ctx.accountHex, (held) => updateBuy(ctx.gameHex, ctx.accountHex, held, record, { outcome }));
+        if (outcome === "led") push("Your key was accepted. You lead the round.", "ok");
+        else if (outcome === "ended") push("The round moved on before your buy was confirmed.");
+        else push("Your buy was not confirmed. It is still pending or was refunded to your Bread account; check Bread.", "error");
         void refreshBalance();
       }),
-    [push, refreshBalance, requireContext, sendThroughBread, waitForChain, withBusy],
+    [awaitSubmission, changeBuys, push, refreshBalance, requestThroughBread, requireContext, waitForChain, withBusy],
   );
 
   const settle = useCallback(

@@ -22,7 +22,7 @@
 use std::{
     collections::BTreeSet,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -55,10 +55,12 @@ use miden_standards::{
         wallets::BasicWallet,
     },
     code_builder::CodeBuilder,
-    note::{config::NetworkAccountConfigNote, FeeSponsorshipNote, P2idNote, P2ideNote},
     tx_script::{ExpirationTransactionScript, SendWalletNotesTransactionScript},
 };
 use sha2::{Digest, Sha256};
+
+#[path = "../recipe.rs"]
+mod recipe;
 
 const GAME: &str = include_str!("../../game.masm");
 const BUY: &str = include_str!("../../buy.masm");
@@ -74,6 +76,22 @@ struct RoundParams {
     max_pot: u32,
 }
 
+impl RoundParams {
+    /// Reads the `FOMO3D_*` round parameters and refuses a combination the game cannot play.
+    fn from_env() -> Result<Self> {
+        let params = RoundParams {
+            round_seconds: env_u32("FOMO3D_ROUND_SECONDS", 3600)?,
+            extend_seconds: env_u32("FOMO3D_EXTEND_SECONDS", 60)?,
+            cap_seconds: env_u32("FOMO3D_CAP_SECONDS", 600)?,
+            start_price: env_u32("FOMO3D_START_PRICE", 1_000_000)?,
+            price_step: env_u32("FOMO3D_PRICE_STEP", 100_000)?,
+            max_pot: env_u32("FOMO3D_MAX_POT", 1_000_000_000)?,
+        };
+        validate_round_params(&params)?;
+        Ok(params)
+    }
+}
+
 fn env_u32(name: &str, default: u32) -> Result<u32> {
     match std::env::var(name) {
         Ok(value) => value
@@ -86,6 +104,49 @@ fn env_u32(name: &str, default: u32) -> Result<u32> {
 
 fn env_string(name: &str, default: impl Into<String>) -> String {
     std::env::var(name).unwrap_or_else(|_| default.into())
+}
+
+/// Points `<root>/latest` at the run directory. The target is the directory's own name: a symlink
+/// target resolves from the link's parent, so a relative `FOMO3D_DEPLOY_DIR` would be doubled.
+fn link_latest(root: &Path, dir: &Path) {
+    let latest = root.join("latest");
+    let _ = fs::remove_file(&latest);
+    if let Some(name) = dir.file_name() {
+        let _ = std::os::unix::fs::symlink(name, &latest);
+    }
+}
+
+/// Longest round, extension or cap accepted: ten years. With a block time before 2084 the game's
+/// `deadline + extend` and `now + cap` additions then stay inside a `u32`.
+const MAX_SECONDS: u32 = 315_360_000;
+
+/// Rejects parameters that freeze the price or overflow a `u32` add in `buy`. The game checks
+/// `pot + price <= max_pot` after adding, and `price` can reach `max_pot + price_step`, so
+/// `max_pot` of at most a third of `u32::MAX` keeps that sum, and the price step, in range.
+fn validate_round_params(params: &RoundParams) -> Result<()> {
+    for (name, seconds) in [
+        ("FOMO3D_ROUND_SECONDS", params.round_seconds),
+        ("FOMO3D_EXTEND_SECONDS", params.extend_seconds),
+        ("FOMO3D_CAP_SECONDS", params.cap_seconds),
+    ] {
+        ensure!(seconds > 0, "{name} must be > 0");
+        ensure!(seconds <= MAX_SECONDS, "{name} must be <= {MAX_SECONDS}");
+    }
+    ensure!(params.start_price > 0, "FOMO3D_START_PRICE must be > 0");
+    ensure!(params.price_step > 0, "FOMO3D_PRICE_STEP must be > 0");
+    ensure!(
+        params.start_price <= params.max_pot,
+        "FOMO3D_START_PRICE must be <= FOMO3D_MAX_POT"
+    );
+    ensure!(
+        params.price_step <= params.max_pot,
+        "FOMO3D_PRICE_STEP must be <= FOMO3D_MAX_POT"
+    );
+    ensure!(
+        params.max_pot <= u32::MAX / 3,
+        "FOMO3D_MAX_POT must be <= u32::MAX/3"
+    );
+    Ok(())
 }
 
 /// Everything that differs between the public networks. `Endpoint::mainnet()` in client 0.17
@@ -134,9 +195,20 @@ fn slot(name: &str, value: Word) -> Result<StorageSlot> {
     Ok(StorageSlot::with_value(StorageSlotName::new(name)?, value))
 }
 
+/// Longest a single proof of work may run. The loop is synchronous, so the step timeout around
+/// the faucet attempt cannot interrupt it; a target this hard is the faucet's mistake.
+const POW_LIMIT: Duration = Duration::from_secs(90);
+
 /// Solves the faucet proof of work: `u64_be(sha256(challenge || nonce_be)[0..8]) < target`.
-fn solve_pow(challenge: &[u8], target: u64) -> u64 {
+fn solve_pow(challenge: &[u8], target: u64) -> Result<u64> {
+    solve_pow_within(challenge, target, POW_LIMIT)
+}
+
+fn solve_pow_within(challenge: &[u8], target: u64, limit: Duration) -> Result<u64> {
+    ensure!(target > 0, "faucet pow target must be > 0");
+    let started = Instant::now();
     let mut nonce: u64 = rand::random();
+    let mut tries: u32 = 0;
     loop {
         let mut hasher = Sha256::new();
         hasher.update(challenge);
@@ -144,9 +216,15 @@ fn solve_pow(challenge: &[u8], target: u64) -> u64 {
         let digest = hasher.finalize();
         let leading = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes"));
         if leading < target {
-            return nonce;
+            return Ok(nonce);
         }
         nonce = nonce.wrapping_add(1);
+        tries = tries.wrapping_add(1);
+        ensure!(
+            tries % (1 << 16) != 0 || started.elapsed() < limit,
+            "faucet pow target {target} not solved within {}s",
+            limit.as_secs_f32()
+        );
     }
 }
 
@@ -186,7 +264,7 @@ async fn claim_faucet_once(base_url: &str, target: AccountId) -> Result<(NoteId,
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow!("faucet pow lacks target: {pow}"))?;
     let challenge = hex::decode(challenge_hex.trim_start_matches("0x"))?;
-    let nonce = solve_pow(&challenge, pow_target);
+    let nonce = solve_pow(&challenge, pow_target)?;
     let response = http
         .get(format!("{base}/get_tokens"))
         .query(&[
@@ -287,8 +365,13 @@ async fn fund_game(
             Instant::now() < deadline,
             "no fee-asset note reached the game account within {wait}s; rerun, or send USDCx to it and rerun with FOMO3D_FUND_WAIT_SECONDS"
         );
-        tokio::time::sleep(Duration::from_secs(interval)).await;
+        tokio::time::sleep(retry_pause(deadline, Instant::now(), Duration::from_secs(interval))).await;
     }
+}
+
+/// The wait before the next funding poll: the retry interval, but never past the deadline.
+fn retry_pause(deadline: Instant, now: Instant, interval: Duration) -> Duration {
+    interval.min(deadline.saturating_duration_since(now))
 }
 
 async fn wait_for_commit(
@@ -316,14 +399,7 @@ async fn wait_for_commit(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let params = RoundParams {
-        round_seconds: env_u32("FOMO3D_ROUND_SECONDS", 3600)?,
-        extend_seconds: env_u32("FOMO3D_EXTEND_SECONDS", 60)?,
-        cap_seconds: env_u32("FOMO3D_CAP_SECONDS", 600)?,
-        start_price: env_u32("FOMO3D_START_PRICE", 1_000_000)?,
-        price_step: env_u32("FOMO3D_PRICE_STEP", 100_000)?,
-        max_pot: env_u32("FOMO3D_MAX_POT", 1_000_000_000)?,
-    };
+    let params = RoundParams::from_env()?;
     let network = network_from_env()?;
     let root = std::env::var_os("FOMO3D_DEPLOY_DIR")
         .map(PathBuf::from)
@@ -417,22 +493,16 @@ async fn main() -> Result<()> {
         ],
         AccountComponentMetadata::new("fomo3d::game"),
     )?;
-    // Every allowlisted script needs a fee entry, including the three defaults the network
-    // builder relies on (config, fee sponsorship, P2ID). All zero: the game pays its own fees.
-    // P2IDE is what a wallet's recallable send produces (Bread 1.17.5 on mainnet); without it
-    // the funding note fails "input note script root is not in the note script allowlist".
-    let fees = [
-        (buy.root(), 0u64.try_into()?),
-        (settle.root(), 0u64.try_into()?),
-        (P2idNote::script_root(), 0u64.try_into()?),
-        (P2ideNote::script_root(), 0u64.try_into()?),
-        (FeeSponsorshipNote::script_root(), 0u64.try_into()?),
-        (NetworkAccountConfigNote::script_root(), 0u64.try_into()?),
-    ];
-    let allowed = BTreeSet::from(fees.map(|(root, _)| root));
+    // Every allowlisted script needs a fee entry. All zero: the game pays its own fees.
+    let roots = recipe::allowlisted_roots(buy.root(), settle.root());
+    let mut policy = BasicConstantFeePolicy::new();
+    for root in roots {
+        policy = policy.with_fee(root, 0u64.try_into()?);
+    }
+    let allowed = BTreeSet::from(roots);
     let fee_manager = FeePolicyManager::builder()
         .fee_faucet_id(fee_faucet)
-        .active_fee_policy(BasicConstantFeePolicy::new().with_fees(fees).into())
+        .active_fee_policy(policy.into())
         .build();
     let auth = AuthNetworkAccount::custom(allowed, fee_manager)?.with_allowed_tx_scripts([
         ExpirationTransactionScript::script_root(),
@@ -481,9 +551,7 @@ async fn main() -> Result<()> {
     wait_for_commit(&mut client, tx_id).await?;
     println!("{} round initialized and committed", network.name);
 
-    let latest = root.join("latest");
-    let _ = fs::remove_file(&latest);
-    let _ = std::os::unix::fs::symlink(&dir, &latest);
+    link_latest(&root, &dir);
 
     let env = format!(
         "VITE_MIDEN_NETWORK={}\nVITE_MIDEN_RPC_URL={}\nVITE_MIDEN_PROVER={}\nVITE_MIDEN_EXPLORER_URL={}\nVITE_MIDEN_FAUCET_URL={}\nVITE_MIDEN_GAME_ADDRESS={game_hex}\n",
@@ -498,4 +566,172 @@ async fn main() -> Result<()> {
     println!("explorer: {}/account/{game_hex}", network.explorer);
     println!("the pot is paid to the last accepted buyer as a public P2ID note; the winning buy is public");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn defaults() -> RoundParams {
+        RoundParams {
+            round_seconds: 3600,
+            extend_seconds: 60,
+            cap_seconds: 600,
+            start_price: 1_000_000,
+            price_step: 100_000,
+            max_pot: 1_000_000_000,
+        }
+    }
+
+    fn refusal(params: RoundParams) -> String {
+        validate_round_params(&params).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn defaults_pass_including_a_first_window_longer_than_the_cap() {
+        assert!(validate_round_params(&defaults()).is_ok());
+    }
+
+    #[test]
+    fn parameters_the_game_cannot_play_are_refused_by_name() {
+        let d = defaults;
+        assert_eq!(
+            refusal(RoundParams {
+                price_step: 0,
+                ..d()
+            }),
+            "FOMO3D_PRICE_STEP must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                round_seconds: 0,
+                ..d()
+            }),
+            "FOMO3D_ROUND_SECONDS must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                extend_seconds: 0,
+                ..d()
+            }),
+            "FOMO3D_EXTEND_SECONDS must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                cap_seconds: 0,
+                ..d()
+            }),
+            "FOMO3D_CAP_SECONDS must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                start_price: 0,
+                ..d()
+            }),
+            "FOMO3D_START_PRICE must be > 0"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                start_price: 2_000_000,
+                max_pot: 1_000_000,
+                ..d()
+            }),
+            "FOMO3D_START_PRICE must be <= FOMO3D_MAX_POT"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                price_step: 2_000_000,
+                max_pot: 1_000_000,
+                start_price: 1,
+                ..d()
+            }),
+            "FOMO3D_PRICE_STEP must be <= FOMO3D_MAX_POT"
+        );
+        assert_eq!(
+            refusal(RoundParams {
+                max_pot: u32::MAX / 3 + 1,
+                ..d()
+            }),
+            "FOMO3D_MAX_POT must be <= u32::MAX/3"
+        );
+        assert!(validate_round_params(&RoundParams {
+            max_pot: u32::MAX / 3,
+            price_step: u32::MAX / 3,
+            start_price: u32::MAX / 3,
+            ..d()
+        })
+        .is_ok());
+        for (name, over) in [
+            ("FOMO3D_ROUND_SECONDS", RoundParams { round_seconds: MAX_SECONDS + 1, ..d() }),
+            ("FOMO3D_EXTEND_SECONDS", RoundParams { extend_seconds: MAX_SECONDS + 1, ..d() }),
+            ("FOMO3D_CAP_SECONDS", RoundParams { cap_seconds: MAX_SECONDS + 1, ..d() }),
+        ] {
+            assert_eq!(refusal(over), format!("{name} must be <= {MAX_SECONDS}"));
+        }
+        assert!(validate_round_params(&RoundParams {
+            round_seconds: MAX_SECONDS,
+            extend_seconds: MAX_SECONDS,
+            cap_seconds: MAX_SECONDS,
+            ..d()
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn a_zero_pow_target_is_refused_instead_of_spinning() {
+        assert_eq!(
+            solve_pow(&[0], 0).unwrap_err().to_string(),
+            "faucet pow target must be > 0"
+        );
+        let nonce = solve_pow(&[1, 2, 3], u64::MAX).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update([1, 2, 3]);
+        hasher.update(nonce.to_be_bytes());
+        let digest = hasher.finalize();
+        assert!(u64::from_be_bytes(digest[..8].try_into().unwrap()) < u64::MAX);
+    }
+
+    #[test]
+    fn a_pow_target_that_is_too_hard_gives_up_within_the_limit() {
+        let started = std::time::Instant::now();
+        let error = solve_pow_within(&[9], 1, Duration::from_millis(100)).unwrap_err();
+        assert!(error.to_string().contains("not solved within"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_funding_pause_never_outlasts_the_deadline() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(1);
+        assert_eq!(retry_pause(deadline, now, Duration::from_secs(30)), Duration::from_secs(1));
+        assert_eq!(retry_pause(deadline, now, Duration::from_millis(200)), Duration::from_millis(200));
+        assert_eq!(retry_pause(deadline, deadline + Duration::from_secs(5), Duration::from_secs(30)), Duration::ZERO);
+    }
+
+    #[test]
+    fn latest_links_to_the_run_directory_by_name_even_for_a_relative_root() {
+        let base = std::env::temp_dir().join(format!("fomo3d-latest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let run = base.join("target").join("123");
+        fs::create_dir_all(&run).unwrap();
+        fs::write(run.join("marker"), "ok").unwrap();
+        let root = base.join("target");
+        link_latest(&root, &run);
+        assert_eq!(
+            fs::read_link(root.join("latest")).unwrap(),
+            PathBuf::from("123")
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("latest").join("marker")).unwrap(),
+            "ok"
+        );
+        // A later deploy into the same root replaces the link with its own directory.
+        let next = base.join("target").join("124");
+        fs::create_dir_all(&next).unwrap();
+        fs::write(next.join("marker"), "next").unwrap();
+        link_latest(&root, &next);
+        assert_eq!(fs::read_link(root.join("latest")).unwrap(), PathBuf::from("124"));
+        assert_eq!(fs::read_to_string(root.join("latest").join("marker")).unwrap(), "next");
+        fs::remove_dir_all(&base).unwrap();
+    }
 }

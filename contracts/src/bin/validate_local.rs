@@ -27,11 +27,12 @@ use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{
-    FeeSponsorshipNote, NetworkAccountTarget, NoteExecutionHint, P2idNote, P2ideNote,
-};
+use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::{ExpirationTransactionScript, SendWalletNotesTransactionScript};
+
+#[path = "../recipe.rs"]
+mod recipe;
 
 const GAME: &str = include_str!("../../game.masm");
 const BUY: &str = include_str!("../../buy.masm");
@@ -216,17 +217,15 @@ async fn main() -> Result<()> {
         ],
         AccountComponentMetadata::new("fomo3d::game"),
     )?;
-    let fee_schedule = [
-        (buy.root(), 0u64.try_into()?),
-        (settle.root(), 0u64.try_into()?),
-        (P2idNote::script_root(), 0u64.try_into()?),
-        (P2ideNote::script_root(), 0u64.try_into()?),
-        (FeeSponsorshipNote::script_root(), 0u64.try_into()?),
-    ];
-    let allowed = BTreeSet::from(fee_schedule.map(|(root, _)| root));
+    let roots = recipe::allowlisted_roots(buy.root(), settle.root());
+    let mut policy = BasicConstantFeePolicy::new();
+    for root in roots {
+        policy = policy.with_fee(root, 0u64.try_into()?);
+    }
+    let allowed = BTreeSet::from(roots);
     let fee_manager = FeePolicyManager::builder()
         .fee_faucet_id(fee_faucet)
-        .active_fee_policy(BasicConstantFeePolicy::new().with_fees(fee_schedule).into())
+        .active_fee_policy(policy.into())
         .build();
     let auth = AuthNetworkAccount::custom(allowed, fee_manager)?.with_allowed_tx_scripts([
         ExpirationTransactionScript::script_root(),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatUsdc, parseUsdc } from "../types";
+import { MAX_NOTE_AMOUNT, formatUsdc, noteAmountFits, parseUsdc } from "../types";
 
 describe("USDCx formatting", () => {
   it("formats base units with two decimals by default", () => {
@@ -18,5 +18,13 @@ describe("USDCx formatting", () => {
     expect(parseUsdc("abc")).toBeNull();
     expect(parseUsdc("")).toBeNull();
     expect(parseUsdc("-1")).toBeNull();
+  });
+
+  it("bounds a note amount to what the game's u32 arithmetic accepts", () => {
+    expect(MAX_NOTE_AMOUNT).toBe(4_294_967_295n);
+    expect(noteAmountFits(0n)).toBe(true);
+    expect(noteAmountFits(4_294_967_295n)).toBe(true);
+    expect(noteAmountFits(4_294_967_296n)).toBe(false);
+    expect(noteAmountFits(-1n)).toBe(false);
   });
 });

@@ -3,6 +3,10 @@ name = "fomo3d-masm"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "fomo3d-masm-build"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
 miden-standards = { version = "=0.17.1", features = ["testing"] }

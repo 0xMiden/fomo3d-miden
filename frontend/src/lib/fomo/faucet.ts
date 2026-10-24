@@ -21,10 +21,10 @@ export const workerPowSolver: PowSolver = (challengeHex, target) =>
 
 /** `target` can exceed 2^53, so it is read from the raw JSON text, never from `JSON.parse`. */
 export function readPowTarget(rawJson: string): bigint {
-  const match = /"target"\s*:\s*(\d+)/.exec(rawJson);
+  const match = /"target"\s*:\s*(\d+)(?![\d.eE])/.exec(rawJson);
   if (!match) throw new Error("Faucet pow response lacks a target.");
   const target = BigInt(match[1]);
-  if (target <= 0n || target > 1n << 64n) throw new Error("Invalid faucet PoW target.");
+  if (target <= 0n || target >= 1n << 64n) throw new Error("Invalid faucet PoW target.");
   return target;
 }
 
@@ -43,6 +43,8 @@ export async function requestFaucetTokens(
     onStatus?: (text: string) => void;
     /** Fresh-challenge attempts on 503/429. Default 4. */
     attempts?: number;
+    /** Pause before a retry, ms. Default 10000. */
+    retryDelayMs?: number;
   } = {},
 ): Promise<FaucetGrant> {
   const configured = options.baseUrl ?? FAUCET_URL;
@@ -70,16 +72,16 @@ export async function requestFaucetTokens(
   let result: { note_id?: string } = {};
   for (let attempt = 1; attempt <= attempts; attempt++) {
     status(attempt === 1 ? "Fetching proof of work challenge..." : `Faucet busy; retrying (${attempt}/${attempts})...`);
-    const powText = await get("pow", { account_id: accountId, amount });
-    const pow = JSON.parse(powText) as { challenge?: string };
-    if (typeof pow.challenge !== "string") throw new Error("Faucet pow response lacks a challenge.");
-    const target = readPowTarget(powText);
-
-    status("Solving proof of work (a few seconds)...");
-    const nonce = await solve(pow.challenge, target);
-
-    status("Requesting tokens...");
     try {
+      const powText = await get("pow", { account_id: accountId, amount });
+      const pow = JSON.parse(powText) as { challenge?: string };
+      if (typeof pow.challenge !== "string") throw new Error("Faucet pow response lacks a challenge.");
+      const target = readPowTarget(powText);
+
+      status("Solving proof of work (a few seconds)...");
+      const nonce = await solve(pow.challenge, target);
+
+      status("Requesting tokens...");
       result = JSON.parse(
         await get("get_tokens", { account_id: accountId, asset_amount: amount, challenge: pow.challenge, nonce: nonce.toString() }),
       ) as { note_id?: string };
@@ -87,7 +89,7 @@ export async function requestFaucetTokens(
     } catch (error) {
       const retryable = /HTTP (503|429)/.test(error instanceof Error ? error.message : "");
       if (!retryable || attempt === attempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs ?? 10_000));
     }
   }
   if (typeof result.note_id !== "string" || !/^0x[0-9a-f]{64}$/i.test(result.note_id)) {
