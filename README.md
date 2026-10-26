@@ -1,5 +1,7 @@
 # Fomo3D on Miden
 
+Live on mainnet at https://theclockisticking.xyz/ (hosted on Vercel from `frontend/`).
+
 This is a Fomo3D homage on Miden. The game account and note scripts are written in Miden Assembly. Rust builds and tests the scripts and deploys a round on testnet or mainnet. React renders a retro dashboard that plays the round through the Bread wallet extension. The winning buy is public (see below); on mainnet that is real money at your own risk.
 
 The original contract used for analysis is FoMo3Dlong at `0xA62142888ABa8370742bE823c1782D17A0389Da1`. See [its verified Etherscan source](https://etherscan.io/address/0xA62142888ABa8370742bE823c1782D17A0389Da1#code). The app omits the original dividends, teams, referrals, and airdrop. It implements a rising key price, a timer, and a last buyer payout.
