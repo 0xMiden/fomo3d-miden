@@ -73,7 +73,7 @@ export function FomoDashboard({ state, now, mode, accountId, error, onRefresh, n
 
         <section className="round-footer"><div><span className="section-kicker">// ROUND TELEMETRY</span><p>{mode === "live" ? "LIVE ACCOUNT" : "PREVIEW DATA"} <span className="bullet">•</span> {accountId ?? "Set VITE_MIDEN_GAME_ADDRESS to read a deployed game"}</p>{error && <p className="read-error">{error}</p>}</div><div className="footer-actions"><span>ROUND {String(state.round).padStart(3, "0")} · {state.keys.toString()} KEYS</span><button type="button" onClick={onRefresh} disabled={!onRefresh}>↻ REFRESH</button></div></section>
       </main>
-      <footer className="site-footer"><span>FOMO3D // {network === "MAINNET" ? "MAINNET" : `${network} PROTOTYPE`}</span><span>{network === "MAINNET" ? "REAL FUNDS. THE WINNING BUY IS PUBLIC." : "NO REAL FUNDS."}</span><span>BUILT WITH MIDEN ASSEMBLY</span></footer>
+      <footer className="site-footer"><span>FOMO3D // {network === "MAINNET" ? "MAINNET" : `${network} PROTOTYPE`}</span><span>{network === "MAINNET" ? "REAL FUNDS. THE WINNING BUY IS PUBLIC." : "NO REAL FUNDS."}</span><span>BUILT WITH MIDEN ASSEMBLY</span><a href="/terms.html">TERMS</a></footer>
     </div>
   );
 }

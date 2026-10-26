@@ -76,6 +76,10 @@ When the address prints, send it USDCx from Bread (1 USDCx is plenty; the whole 
 
 Bread must be a mainnet wallet: the page asks for "mainnet" and Bread refuses a testnet wallet with a message the page shows. Players need no invite code beyond the one their Bread account already used; only account creation is gated on mainnet and the game creates none. There is no server to run: the dashboard is static, the network transaction builder on cedar executes the game account, and the deploy happens once.
 
+## Geoblocking and terms
+
+`frontend/middleware.ts` is Vercel Edge Middleware: on production deployments it answers HTTP 451 to visitors whose country (Vercel's geolocation header, which a client cannot forge) is in `frontend/geoblock.ts`: sanctioned countries and jurisdictions that license pay-to-play games strictly, the United States and Canada as a whole among them. Preview deployments are never blocked, so the game can be tested from anywhere. Edit the two sets and redeploy to change the list. `frontend/public/terms.html` holds the terms of use, linked from the footer and the buy panel. None of this is legal advice; it narrows exposure, it does not remove it.
+
 ## Run the frontend
 
 ```bash

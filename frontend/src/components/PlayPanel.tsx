@@ -100,7 +100,7 @@ export function PlayPanel({ state, now, bread, actions }: PlayPanelProps) {
           {busy === "buy" ? "BUYING…" : phase === "open" ? "BUY KEY" : "TIME IS UP"}
         </button>
         <small>
-          One key at the price when the note is consumed{state ? ` (now ${formatUsdc(state.price)} USDCX, +${state.extendSeconds}s on the clock)` : ""}. Change above the price comes back to your Bread account.
+          One key at the price when the note is consumed{state ? ` (now ${formatUsdc(state.price)} USDCX, +${state.extendSeconds}s on the clock)` : ""}. Change above the price comes back to your Bread account. Buying means you accept the <a href="/terms.html" target="_blank" rel="noreferrer">terms</a>.
         </small>
       </section>
 
