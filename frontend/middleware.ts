@@ -1,4 +1,4 @@
-import { blockReason } from "./geoblock";
+import { blockReason } from "./geoblock.js";
 
 /**
  * Vercel Edge Middleware: runs before every page request on production and answers 451 for
