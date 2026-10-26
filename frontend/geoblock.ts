@@ -12,6 +12,7 @@ export const STRICT = new Set([
   "US", "CA", // every state / province; a few make even playing an offence
   "GB", "DE", "AT", "CH", "NL", "FR", "ES", "IT", "PT", "PL",
   "AU", "SG", "CN", "KR", "TR",
+  "IN", // Promotion and Regulation of Online Gaming Act 2025: online money games banned outright
 ]);
 
 export type BlockReason = "sanctioned" | "restricted";
